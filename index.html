@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Log & Lift Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0F0F0F; color: #E8E6E0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+  h1 { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #888; margin-bottom: 24px; }
+  .badge { display: inline-block; background: #185FA5; color: white; font-size: 11px; padding: 3px 10px; border-radius: 20px; margin-left: 8px; vertical-align: middle; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .metric { background: #1A1A1A; border: 0.5px solid #2A2A2A; border-radius: 12px; padding: 14px; }
+  .metric-label { font-size: 11px; color: #888; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .metric-value { font-size: 22px; font-weight: 600; }
+  .metric-value.green { color: #4CD9A0; }
+  .metric-value.blue { color: #5BA3E8; }
+  .metric-value.purple { color: #A78BFA; }
+  .metric-value.orange { color: #FB923C; }
+  .metric-sub { font-size: 11px; color: #666; margin-top: 2px; }
+  .section { background: #1A1A1A; border: 0.5px solid #2A2A2A; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .section-title { font-size: 13px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+  canvas { width: 100% !important; }
+  .gym-log { display: flex; flex-direction: column; gap: 8px; }
+  .gym-day { display: grid; grid-template-columns: 100px 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; background: #111; border-radius: 8px; font-size: 13px; }
+  .gym-date { color: #888; font-size: 12px; }
+  .gym-activity { color: #E8E6E0; }
+  .gym-kcal { font-weight: 600; }
+  .tag { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 20px; margin-top: 3px; }
+  .tag-caminadora { background: #1A3A5C; color: #5BA3E8; }
+  .tag-carrera    { background: #2D1F6E; color: #A78BFA; }
+  .tag-bici       { background: #0F3324; color: #4CD9A0; }
+  .tag-pesas      { background: #3A1F00; color: #FB923C; }
+  .tag-caminata   { background: #0F3324; color: #4CD9A0; }
+  .tag-otro       { background: #2A2A2A; color: #888; }
+  .progress-bar-container { margin-top: 12px; }
+  .progress-label { display: flex; justify-content: space-between; font-size: 12px; color: #888; margin-bottom: 6px; }
+  .progress-bar { height: 8px; background: #2A2A2A; border-radius: 4px; overflow: hidden; }
+  .progress-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #185FA5, #4CD9A0); }
+  .pesas-table { width: 100%; font-size: 12px; border-collapse: collapse; }
+  .pesas-table th { color: #666; text-align: left; padding: 6px 8px; border-bottom: 0.5px solid #2A2A2A; font-weight: 500; }
+  .pesas-table td { padding: 8px; border-bottom: 0.5px solid #1E1E1E; color: #E8E6E0; }
+  .pesas-table tr:last-child td { border-bottom: none; }
+  footer { text-align: center; font-size: 11px; color: #444; margin-top: 24px; padding-bottom: 40px; }
+
+  /* --- Modal & Formulario --- */
+  .fab { position: fixed; bottom: 24px; right: 24px; width: 52px; height: 52px; background: #185FA5; border: none; border-radius: 50%; font-size: 24px; color: white; cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; transition: background 0.2s; }
+  .fab:hover { background: #1a6bbf; }
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 200; align-items: center; justify-content: center; padding: 20px; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: #1A1A1A; border: 0.5px solid #2A2A2A; border-radius: 16px; padding: 24px; width: 100%; max-width: 480px; max-height: 90vh; overflow-y: auto; }
+  .modal h2 { font-size: 16px; font-weight: 600; margin-bottom: 20px; }
+  .form-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+  .tab-btn { flex: 1; padding: 8px; background: #111; border: 0.5px solid #2A2A2A; border-radius: 8px; color: #888; font-size: 12px; cursor: pointer; transition: all 0.2s; }
+  .tab-btn.active { background: #185FA5; border-color: #185FA5; color: white; }
+  .form-group { margin-bottom: 14px; }
+  .form-group label { display: block; font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+  .form-group input, .form-group select, .form-group textarea { width: 100%; background: #111; border: 0.5px solid #2A2A2A; border-radius: 8px; color: #E8E6E0; font-size: 13px; padding: 10px 12px; outline: none; }
+  .form-group input:focus, .form-group select:focus { border-color: #185FA5; }
+  .form-group textarea { resize: vertical; min-height: 60px; }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .form-actions { display: flex; gap: 10px; margin-top: 20px; }
+  .btn { flex: 1; padding: 12px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+  .btn-primary { background: #185FA5; color: white; }
+  .btn-primary:hover { background: #1a6bbf; }
+  .btn-primary:disabled { background: #2A2A2A; color: #666; cursor: not-allowed; }
+  .btn-secondary { background: #2A2A2A; color: #888; }
+  .btn-secondary:hover { background: #333; }
+  .exercises-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+  .exercise-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 6px; align-items: center; }
+  .exercise-row input { padding: 8px; font-size: 12px; }
+  .remove-ex { background: none; border: none; color: #F87171; cursor: pointer; font-size: 16px; padding: 0 4px; }
+  .add-ex-btn { background: none; border: 0.5px dashed #2A2A2A; border-radius: 8px; color: #5BA3E8; font-size: 12px; padding: 8px; cursor: pointer; width: 100%; margin-bottom: 14px; }
+  .add-ex-btn:hover { border-color: #5BA3E8; }
+  .toast { position: fixed; bottom: 90px; right: 24px; background: #4CD9A0; color: #0F0F0F; font-size: 13px; font-weight: 600; padding: 10px 18px; border-radius: 8px; z-index: 300; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  .toast.error { background: #F87171; }
+
+  /* Settings */
+  .settings-link { font-size: 11px; color: #555; cursor: pointer; text-decoration: underline; }
+  .settings-link:hover { color: #888; }
+
+  /* Loading */
+  .loading { text-align: center; color: #666; font-size: 13px; padding: 40px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="loading">Cargando datos...</div>
+</div>
+
+<!-- FAB -->
+<button class="fab" onclick="openModal()" title="Registrar sesión">+</button>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h2>Registrar sesión</h2>
+    <div class="form-tabs">
+      <button class="tab-btn active" onclick="switchTab('cardio')">Cardio</button>
+      <button class="tab-btn" onclick="switchTab('pesas')">Pesas</button>
+      <button class="tab-btn" onclick="switchTab('peso')">Peso</button>
+    </div>
+
+    <!-- TAB CARDIO -->
+    <div id="tab-cardio">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="date" id="c-date">
+      </div>
+      <div class="form-group">
+        <label>Tipo</label>
+        <select id="c-type">
+          <option value="caminadora">Caminadora</option>
+          <option value="carrera">Carrera</option>
+          <option value="bici">Bicicleta</option>
+          <option value="caminata">Caminata exterior</option>
+          <option value="otro">Otro</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Duración (min)</label>
+          <input type="number" id="c-duration" placeholder="45">
+        </div>
+        <div class="form-group">
+          <label>Distancia (km)</label>
+          <input type="number" id="c-distance" step="0.01" placeholder="4.5">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Calorías</label>
+          <input type="number" id="c-calories" placeholder="300">
+        </div>
+        <div class="form-group">
+          <label>FC promedio (lpm)</label>
+          <input type="number" id="c-hr" placeholder="145">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Notas</label>
+        <textarea id="c-notes" placeholder="Opcional..."></textarea>
+      </div>
+    </div>
+
+    <!-- TAB PESAS -->
+    <div id="tab-pesas" style="display:none">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Fecha</label>
+          <input type="date" id="p-date">
+        </div>
+        <div class="form-group">
+          <label>Grupo muscular</label>
+          <input type="text" id="p-group" placeholder="Ej: Piernas">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Duración (min)</label>
+          <input type="number" id="p-duration" placeholder="60">
+        </div>
+        <div class="form-group">
+          <label>Calorías</label>
+          <input type="number" id="p-calories" placeholder="150">
+        </div>
+      </div>
+      <label style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:8px;">Ejercicios</label>
+      <div class="exercises-list" id="exercises-list">
+        <div class="exercise-row">
+          <input type="text" placeholder="Ejercicio">
+          <input type="number" placeholder="Series" min="1">
+          <input type="number" placeholder="Reps" min="1">
+          <input type="text" placeholder="Peso">
+          <button class="remove-ex" onclick="removeExercise(this)">×</button>
+        </div>
+      </div>
+      <button class="add-ex-btn" onclick="addExercise()">+ Agregar ejercicio</button>
+      <div class="form-group">
+        <label>Notas</label>
+        <textarea id="p-notes" placeholder="Opcional..."></textarea>
+      </div>
+    </div>
+
+    <!-- TAB PESO -->
+    <div id="tab-peso" style="display:none">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="date" id="w-date">
+      </div>
+      <div class="form-group">
+        <label>Peso (kg)</label>
+        <input type="number" id="w-weight" step="0.01" placeholder="69.80">
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" id="save-btn" onclick="saveEntry()">Guardar</button>
+    </div>
+    <p style="font-size:11px;color:#555;text-align:center;margin-top:12px;">
+      <span class="settings-link" onclick="openSettings()">⚙ Configurar GitHub token</span>
+    </p>
+  </div>
+</div>
+
+<!-- Modal Settings -->
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <h2>Configuración GitHub</h2>
+    <p style="font-size:12px;color:#888;margin-bottom:16px;line-height:1.6;">
+      Para guardar datos necesitas un <strong style="color:#E8E6E0">Personal Access Token</strong> de GitHub con permisos <code>repo</code>.<br>
+      Se guarda solo en tu navegador (localStorage).
+    </p>
+    <div class="form-group">
+      <label>Usuario GitHub</label>
+      <input type="text" id="s-owner" placeholder="tu-usuario">
+    </div>
+    <div class="form-group">
+      <label>Repositorio</label>
+      <input type="text" id="s-repo" placeholder="log-and-lift">
+    </div>
+    <div class="form-group">
+      <label>Personal Access Token</label>
+      <input type="password" id="s-token" placeholder="ghp_...">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeSettings()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ─── CONFIG ──────────────────────────────────────────────────────────────────
+const DATA_PATH = 'data/sessions.json';
+let currentTab = 'cardio';
+let appData = null;
+let chartInstances = {};
+
+function getConfig() {
+  return {
+    owner: localStorage.getItem('gh_owner') || '',
+    repo:  localStorage.getItem('gh_repo')  || '',
+    token: localStorage.getItem('gh_token') || ''
+  };
+}
+
+// ─── FETCH DATA ───────────────────────────────────────────────────────────────
+async function loadData() {
+  const cfg = getConfig();
+  let url;
+
+  if (cfg.owner && cfg.repo) {
+    // Fetch via GitHub API para evitar caché agresivo
+    url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${DATA_PATH}`;
+    try {
+      const headers = { Accept: 'application/vnd.github.v3+json' };
+      if (cfg.token) headers['Authorization'] = `token ${cfg.token}`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) throw new Error('GitHub API error');
+      const meta = await res.json();
+      const content = atob(meta.content.replace(/\n/g, ''));
+      appData = JSON.parse(content);
+      appData._sha = meta.sha; // necesario para escribir
+    } catch (e) {
+      // Fallback: cargar local
+      appData = await fetchLocal();
+    }
+  } else {
+    appData = await fetchLocal();
+  }
+
+  renderApp();
+}
+
+async function fetchLocal() {
+  const res = await fetch(`${DATA_PATH}?t=${Date.now()}`);
+  return res.json();
+}
+
+// ─── SAVE DATA ────────────────────────────────────────────────────────────────
+async function saveData() {
+  const cfg = getConfig();
+  if (!cfg.owner || !cfg.repo || !cfg.token) {
+    showToast('Configura tu GitHub token primero', true);
+    openSettings();
+    return false;
+  }
+
+  const dataCopy = { ...appData };
+  delete dataCopy._sha;
+  const content = btoa(unescape(encodeURIComponent(JSON.stringify(dataCopy, null, 2))));
+
+  const url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${DATA_PATH}`;
+  const body = {
+    message: `Update: nueva sesión ${new Date().toISOString().slice(0,10)}`,
+    content,
+    sha: appData._sha
+  };
+
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `token ${cfg.token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    console.error(err);
+    showToast('Error al guardar: ' + (err.message || 'desconocido'), true);
+    return false;
+  }
+
+  const result = await res.json();
+  appData._sha = result.content.sha;
+  return true;
+}
+
+// ─── RENDER ───────────────────────────────────────────────────────────────────
+function renderApp() {
+  const d = appData;
+  const sessions = d.sessions.slice().sort((a,b) => a.date.localeCompare(b.date));
+  const weights  = d.weight_log.slice().sort((a,b) => a.date.localeCompare(b.date));
+
+  const latestWeight = weights.length ? weights[weights.length-1].weight : null;
+  const firstWeight  = weights.length ? weights[0].weight : null;
+  const weightDiff   = latestWeight && firstWeight ? (latestWeight - firstWeight).toFixed(2) : null;
+  const imc = latestWeight ? (latestWeight / (d.profile.altura ** 2)).toFixed(1) : '—';
+
+  const cardioSessions = sessions.filter(s => s.pace);
+  const bestPace = cardioSessions.length ? Math.min(...cardioSessions.map(s => s.pace)) : null;
+  const totalKcal = sessions.reduce((sum, s) => sum + (s.calories || 0), 0);
+  const totalKm   = sessions.reduce((sum, s) => sum + (s.distance || 0), 0);
+  const activeDays = new Set(sessions.map(s => s.date)).size;
+
+  const weekNum = calcWeekNum(sessions);
+
+  function formatPace(p) {
+    if (!p) return '—';
+    const m = Math.floor(p);
+    const s = Math.round((p - m) * 60);
+    return `${m}'${String(s).padStart(2,'0')}"`;
+  }
+
+  // Destruir charts previos
+  Object.values(chartInstances).forEach(c => c.destroy());
+  chartInstances = {};
+
+  document.getElementById('app').innerHTML = `
+    <h1>Log & Lift <span class="badge">Semana ${weekNum}</span></h1>
+    <p class="subtitle">${fmtDate(sessions[0]?.date)} — ${fmtDate(sessions[sessions.length-1]?.date)} · ${d.profile.edad} años · ${d.profile.altura}m</p>
+
+    <div class="metrics">
+      <div class="metric">
+        <p class="metric-label">Peso actual</p>
+        <p class="metric-value green">${latestWeight ? latestWeight.toFixed(2) + ' kg' : '—'}</p>
+        <p class="metric-sub">${weightDiff !== null ? (weightDiff > 0 ? '↑' : '↓') + ' ' + Math.abs(weightDiff) + ' kg desde inicio' : ''}</p>
+      </div>
+      <div class="metric">
+        <p class="metric-label">IMC</p>
+        <p class="metric-value blue">${imc}</p>
+        <p class="metric-sub">Rango normal ✓</p>
+      </div>
+      <div class="metric">
+        <p class="metric-label">Mejor ritmo</p>
+        <p class="metric-value purple">${formatPace(bestPace)}</p>
+        <p class="metric-sub">min/km</p>
+      </div>
+      <div class="metric">
+        <p class="metric-label">Días activos</p>
+        <p class="metric-value orange">${activeDays}</p>
+        <p class="metric-sub">Sesiones totales</p>
+      </div>
+      <div class="metric">
+        <p class="metric-label">Kcal activas</p>
+        <p class="metric-value green">${totalKcal.toLocaleString()}</p>
+        <p class="metric-sub">Total quemadas</p>
+      </div>
+      <div class="metric">
+        <p class="metric-label">Distancia</p>
+        <p class="metric-value blue">${totalKm.toFixed(1)} km</p>
+        <p class="metric-sub">Total recorrida</p>
+      </div>
+    </div>
+
+    <!-- PESO -->
+    <div class="section">
+      <p class="section-title">📊 Progresión de peso</p>
+      <div style="height:180px"><canvas id="pesoChart"></canvas></div>
+      <div class="progress-bar-container">
+        <div class="progress-label"><span>Inicio: ${firstWeight} kg</span><span>Hoy: ${latestWeight} kg</span></div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(100,Math.max(0,((firstWeight - latestWeight)/(firstWeight - 65))*100)).toFixed(0)}%"></div></div>
+        <div style="font-size:11px;color:#666;margin-top:4px;">Objetivo estimado: 65–67 kg con músculo ganado</div>
+      </div>
+    </div>
+
+    <!-- RITMO -->
+    ${cardioSessions.length >= 2 ? `
+    <div class="section">
+      <p class="section-title">🏃 Progresión de ritmo (min/km)</p>
+      <div style="height:160px"><canvas id="ritmoChart"></canvas></div>
+    </div>` : ''}
+
+    <!-- CALORÍAS -->
+    <div class="section">
+      <p class="section-title">🔥 Calorías activas por sesión</p>
+      <div style="height:180px"><canvas id="kcalChart"></canvas></div>
+    </div>
+
+    <!-- FC -->
+    <div class="section">
+      <p class="section-title">❤️ Frecuencia cardíaca promedio</p>
+      <div style="height:160px"><canvas id="fcChart"></canvas></div>
+    </div>
+
+    <!-- SESIONES -->
+    <div class="section">
+      <p class="section-title">📅 Registro de sesiones</p>
+      <div class="gym-log">
+        ${sessions.slice().reverse().map(s => `
+          <div class="gym-day">
+            <div>
+              <p class="gym-date">${fmtDateShort(s.date)}</p>
+              <span class="tag tag-${s.type}">${typeLabel(s.type)}</span>
+            </div>
+            <div>
+              <p class="gym-activity">${sessionDetail(s)}</p>
+              ${s.notes ? `<p style="font-size:11px;color:#666;margin-top:2px;">${s.notes}</p>` : ''}
+            </div>
+            <p class="gym-kcal" style="color:${typeColor(s.type)}">${s.calories ? s.calories + ' kcal' : '—'}</p>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <!-- PESAS -->
+    ${d.strength_log.slice().reverse().map(sl => `
+    <div class="section">
+      <p class="section-title">💪 Pesas · ${sl.muscle_group} — ${fmtDateShort(sl.date)}</p>
+      <table class="pesas-table">
+        <tr><th>Ejercicio</th><th>Series</th><th>Peso</th></tr>
+        ${sl.exercises.map(e => `
+          <tr>
+            <td>${e.name}</td>
+            <td>${e.sets}${e.reps ? ' × ' + e.reps : ''}</td>
+            <td>${e.weight}</td>
+          </tr>
+        `).join('')}
+      </table>
+    </div>
+    `).join('')}
+
+    <footer>Log & Lift · Actualizado ${fmtDateShort(sessions[sessions.length-1]?.date || new Date().toISOString().slice(0,10))}</footer>
+  `;
+
+  // Render charts
+  const grid = 'rgba(255,255,255,0.06)';
+  const txt = '#666';
+
+  // Peso
+  chartInstances.peso = new Chart(document.getElementById('pesoChart'), {
+    type: 'line',
+    data: {
+      labels: weights.map(w => fmtDateShort(w.date)),
+      datasets: [{
+        data: weights.map(w => w.weight),
+        borderColor: '#4CD9A0',
+        backgroundColor: 'rgba(76,217,160,0.08)',
+        borderWidth: 2,
+        pointBackgroundColor: weights.map(w => w.weight === latestWeight ? '#4CD9A0' : '#5BA3E8'),
+        pointRadius: weights.map((w, i) => i === weights.length - 1 ? 7 : 4),
+        fill: true, tension: 0.3
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => c.parsed.y.toFixed(2) + ' kg' } } },
+      scales: {
+        y: { ticks: { color: txt, callback: v => v + ' kg' }, grid: { color: grid } },
+        x: { ticks: { color: txt, autoSkip: true, maxTicksLimit: 8, font: { size: 10 } }, grid: { color: grid } }
+      }
+    }
+  });
+
+  // Ritmo
+  if (cardioSessions.length >= 2) {
+    chartInstances.ritmo = new Chart(document.getElementById('ritmoChart'), {
+      type: 'line',
+      data: {
+        labels: cardioSessions.map(s => fmtDateShort(s.date)),
+        datasets: [{
+          data: cardioSessions.map(s => s.pace),
+          borderColor: '#A78BFA',
+          backgroundColor: 'rgba(167,139,250,0.08)',
+          borderWidth: 2,
+          pointBackgroundColor: cardioSessions.map((s, i) => i === cardioSessions.length - 1 ? '#4CD9A0' : '#A78BFA'),
+          pointRadius: cardioSessions.map((s, i) => i === cardioSessions.length - 1 ? 7 : 4),
+          fill: true, tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => formatPace(c.parsed.y) + ' min/km' } } },
+        scales: {
+          y: { reverse: true, ticks: { color: txt, callback: v => Math.floor(v) + "'" }, grid: { color: grid } },
+          x: { ticks: { color: txt, autoSkip: true, maxTicksLimit: 8, font: { size: 10 } }, grid: { color: grid } }
+        }
+      }
+    });
+  }
+
+  // Kcal
+  const kcalColors = { caminadora: '#185FA5', carrera: '#A78BFA', bici: '#4CD9A0', pesas: '#FB923C', caminata: '#4CD9A0', otro: '#888' };
+  chartInstances.kcal = new Chart(document.getElementById('kcalChart'), {
+    type: 'bar',
+    data: {
+      labels: sessions.map(s => fmtDateShort(s.date)),
+      datasets: [{
+        data: sessions.map(s => s.calories || 0),
+        backgroundColor: sessions.map(s => kcalColors[s.type] || '#888'),
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => c.parsed.y + ' kcal' } } },
+      scales: {
+        y: { beginAtZero: true, ticks: { color: txt }, grid: { color: grid } },
+        x: { ticks: { color: txt, autoSkip: true, maxTicksLimit: 8, font: { size: 10 } }, grid: { color: grid } }
+      }
+    }
+  });
+
+  // FC
+  const fcSessions = sessions.filter(s => s.hr_avg);
+  chartInstances.fc = new Chart(document.getElementById('fcChart'), {
+    type: 'line',
+    data: {
+      labels: fcSessions.map(s => fmtDateShort(s.date)),
+      datasets: [{
+        data: fcSessions.map(s => s.hr_avg),
+        borderColor: '#F87171',
+        backgroundColor: 'rgba(248,113,113,0.07)',
+        borderWidth: 2,
+        pointBackgroundColor: '#F87171',
+        pointRadius: 4,
+        fill: true, tension: 0.3
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => c.parsed.y + ' lpm' } } },
+      scales: {
+        y: { ticks: { color: txt, callback: v => v + ' lpm' }, grid: { color: grid } },
+        x: { ticks: { color: txt, autoSkip: true, maxTicksLimit: 8, font: { size: 10 } }, grid: { color: grid } }
+      }
+    }
+  });
+}
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function fmtDate(dateStr) {
+  if (!dateStr) return '';
+  const [y,m,d] = dateStr.split('-');
+  const months = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  return `${parseInt(d)} ${months[parseInt(m)-1]} ${y}`;
+}
+function fmtDateShort(dateStr) {
+  if (!dateStr) return '';
+  const [y,m,d] = dateStr.split('-');
+  const months = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  return `${parseInt(d)} ${months[parseInt(m)-1]}`;
+}
+function typeLabel(t) {
+  return { caminadora: 'Caminadora', carrera: 'Carrera', bici: 'Bicicleta', pesas: '💪 Pesas', caminata: 'Caminata', otro: 'Otro' }[t] || t;
+}
+function typeColor(t) {
+  return { caminadora: '#5BA3E8', carrera: '#A78BFA', bici: '#4CD9A0', pesas: '#FB923C', caminata: '#4CD9A0', otro: '#888' }[t] || '#888';
+}
+function sessionDetail(s) {
+  const parts = [];
+  if (s.duration) parts.push(s.duration + ' min');
+  if (s.distance) parts.push(s.distance.toFixed(2) + ' km');
+  if (s.hr_avg)   parts.push(s.hr_avg + ' lpm');
+  return parts.join(' · ') || '—';
+}
+function calcWeekNum(sessions) {
+  if (!sessions.length) return 1;
+  const first = new Date(sessions[0].date);
+  const last  = new Date(sessions[sessions.length-1].date);
+  return Math.max(1, Math.ceil((last - first) / (7 * 86400000)) + 1);
+}
+
+// ─── MODAL ────────────────────────────────────────────────────────────────────
+function openModal() {
+  const today = new Date().toISOString().slice(0,10);
+  document.getElementById('c-date').value = today;
+  document.getElementById('p-date').value = today;
+  document.getElementById('w-date').value = today;
+  document.getElementById('modal').classList.add('open');
+}
+function closeModal() {
+  document.getElementById('modal').classList.remove('open');
+}
+function switchTab(tab) {
+  currentTab = tab;
+  ['cardio','pesas','peso'].forEach(t => {
+    document.getElementById('tab-' + t).style.display = t === tab ? '' : 'none';
+    document.querySelectorAll('.tab-btn').forEach((b, i) => {
+      b.classList.toggle('active', ['cardio','pesas','peso'][i] === tab);
+    });
+  });
+}
+
+function addExercise() {
+  const row = document.createElement('div');
+  row.className = 'exercise-row';
+  row.innerHTML = `
+    <input type="text" placeholder="Ejercicio">
+    <input type="number" placeholder="Series" min="1">
+    <input type="number" placeholder="Reps" min="1">
+    <input type="text" placeholder="Peso">
+    <button class="remove-ex" onclick="removeExercise(this)">×</button>
+  `;
+  document.getElementById('exercises-list').appendChild(row);
+}
+function removeExercise(btn) {
+  const list = document.getElementById('exercises-list');
+  if (list.children.length > 1) btn.parentElement.remove();
+}
+
+async function saveEntry() {
+  const btn = document.getElementById('save-btn');
+  btn.disabled = true;
+  btn.textContent = 'Guardando...';
+
+  try {
+    if (currentTab === 'cardio') {
+      const date     = document.getElementById('c-date').value;
+      const type     = document.getElementById('c-type').value;
+      const duration = parseFloat(document.getElementById('c-duration').value) || null;
+      const distance = parseFloat(document.getElementById('c-distance').value) || null;
+      const calories = parseInt(document.getElementById('c-calories').value) || null;
+      const hr_avg   = parseInt(document.getElementById('c-hr').value) || null;
+      const notes    = document.getElementById('c-notes').value.trim();
+      const pace     = (duration && distance) ? parseFloat((duration / distance).toFixed(2)) : null;
+
+      if (!date || !type) { showToast('Fecha y tipo son obligatorios', true); return; }
+
+      appData.sessions.push({ id: `${date}-${Date.now()}`, date, type, duration, distance, calories, hr_avg, pace, notes });
+
+    } else if (currentTab === 'pesas') {
+      const date     = document.getElementById('p-date').value;
+      const group    = document.getElementById('p-group').value.trim() || 'General';
+      const duration = parseInt(document.getElementById('p-duration').value) || null;
+      const calories = parseInt(document.getElementById('p-calories').value) || null;
+      const notes    = document.getElementById('p-notes').value.trim();
+
+      if (!date) { showToast('La fecha es obligatoria', true); return; }
+
+      const rows = document.getElementById('exercises-list').querySelectorAll('.exercise-row');
+      const exercises = Array.from(rows).map(r => {
+        const inputs = r.querySelectorAll('input');
+        return {
+          name:   inputs[0].value.trim(),
+          sets:   parseInt(inputs[1].value) || null,
+          reps:   parseInt(inputs[2].value) || null,
+          weight: inputs[3].value.trim()
+        };
+      }).filter(e => e.name);
+
+      appData.sessions.push({ id: `${date}-${Date.now()}`, date, type: 'pesas', duration, distance: null, calories, hr_avg: null, pace: null, notes });
+      appData.strength_log.push({ date, muscle_group: group, exercises });
+
+    } else if (currentTab === 'peso') {
+      const date   = document.getElementById('w-date').value;
+      const weight = parseFloat(document.getElementById('w-weight').value);
+
+      if (!date || isNaN(weight)) { showToast('Fecha y peso son obligatorios', true); return; }
+
+      // reemplazar si ya hay registro del mismo día
+      const existing = appData.weight_log.findIndex(w => w.date === date);
+      if (existing >= 0) appData.weight_log[existing].weight = weight;
+      else appData.weight_log.push({ date, weight });
+    }
+
+    const ok = await saveData();
+    if (ok) {
+      showToast('Guardado correctamente');
+      closeModal();
+      renderApp();
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Guardar';
+  }
+}
+
+// ─── SETTINGS ─────────────────────────────────────────────────────────────────
+function openSettings() {
+  const cfg = getConfig();
+  document.getElementById('s-owner').value = cfg.owner;
+  document.getElementById('s-repo').value  = cfg.repo;
+  document.getElementById('s-token').value  = cfg.token;
+  document.getElementById('settings-modal').classList.add('open');
+}
+function closeSettings() {
+  document.getElementById('settings-modal').classList.remove('open');
+}
+function saveSettings() {
+  localStorage.setItem('gh_owner', document.getElementById('s-owner').value.trim());
+  localStorage.setItem('gh_repo',  document.getElementById('s-repo').value.trim());
+  localStorage.setItem('gh_token', document.getElementById('s-token').value.trim());
+  closeSettings();
+  showToast('Configuración guardada');
+  loadData();
+}
+
+// ─── TOAST ────────────────────────────────────────────────────────────────────
+function showToast(msg, isError = false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isError ? ' error' : '');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// Cerrar modales al hacer click fuera
+document.getElementById('modal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
+document.getElementById('settings-modal').addEventListener('click', e => { if (e.target === e.currentTarget) closeSettings(); });
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+loadData();
+</script>
+</body>
+</html>
