@@ -182,6 +182,106 @@ window.resetHistory = async () => {
   await loadData();
 };
 
+// ─── JSON VALIDATOR (seguro — sin eval, sin innerHTML con datos) ──────────────
+const STR  = (v, max=200) => typeof v === 'string' ? v.trim().slice(0, max) : null;
+const NUM  = v => (typeof v === 'number' && isFinite(v)) ? v : null;
+const INT  = v => (typeof v === 'number' && Number.isInteger(v) && isFinite(v)) ? v : null;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const VALID_TYPES = new Set(['caminadora','carrera','bici','caminata','pesas','otro']);
+
+function sanitizeSession(raw) {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const date = STR(raw.date, 10);
+  if (!date || !DATE_RE.test(date)) return null;
+  const type = STR(raw.type, 20);
+  if (!VALID_TYPES.has(type)) return null;
+  return {
+    date,
+    type,
+    duration: NUM(raw.duration),
+    distance: NUM(raw.distance),
+    calories: INT(raw.calories),
+    hr_avg:   INT(raw.hr_avg),
+    pace:     NUM(raw.pace),
+    notes:    STR(raw.notes) || ''
+  };
+}
+
+function sanitizeWeight(raw) {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const date = STR(raw.date, 10);
+  if (!date || !DATE_RE.test(date)) return null;
+  const weight = NUM(raw.weight);
+  if (!weight || weight < 20 || weight > 300) return null;
+  return { date, weight };
+}
+
+function sanitizeExercise(raw) {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const name = STR(raw.name, 100);
+  if (!name) return null;
+  return {
+    name,
+    sets:   INT(raw.sets),
+    reps:   INT(raw.reps),
+    weight: STR(raw.weight, 50) || ''
+  };
+}
+
+function sanitizeStrength(raw) {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const date = STR(raw.date, 10);
+  if (!date || !DATE_RE.test(date)) return null;
+  const exercises = Array.isArray(raw.exercises)
+    ? raw.exercises.map(sanitizeExercise).filter(Boolean)
+    : [];
+  return {
+    date,
+    muscle_group: STR(raw.muscle_group, 50) || 'General',
+    exercises
+  };
+}
+
+function parseAndValidateJSON(text) {
+  // JSON.parse rechaza cualquier código que no sea JSON válido
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch { return { error: 'JSON inválido. Verifica la sintaxis.' }; }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { error: 'El JSON debe ser un objeto { sessions, weight_log, strength_log }.' };
+  }
+
+  const sessions     = Array.isArray(parsed.sessions)     ? parsed.sessions.map(sanitizeSession).filter(Boolean)   : [];
+  const weight_log   = Array.isArray(parsed.weight_log)   ? parsed.weight_log.map(sanitizeWeight).filter(Boolean)  : [];
+  const strength_log = Array.isArray(parsed.strength_log) ? parsed.strength_log.map(sanitizeStrength).filter(Boolean) : [];
+
+  if (!sessions.length && !weight_log.length && !strength_log.length) {
+    return { error: 'No se encontraron datos válidos. Revisa el formato.' };
+  }
+
+  return { sessions, weight_log, strength_log };
+}
+
+window.previewJSON = () => {
+  const text = document.getElementById('j-input').value.trim();
+  const result = parseAndValidateJSON(text);
+  const preview = document.getElementById('j-preview');
+  if (result.error) {
+    preview.style.color = '#F87171';
+    preview.textContent = '✗ ' + result.error;
+    document.getElementById('save-btn').disabled = true;
+    return;
+  }
+  preview.style.color = '#4CD9A0';
+  const parts = [];
+  if (result.sessions.length)     parts.push(`${result.sessions.length} sesión(es)`);
+  if (result.weight_log.length)   parts.push(`${result.weight_log.length} peso(s)`);
+  if (result.strength_log.length) parts.push(`${result.strength_log.length} entrenamiento(s) de pesas`);
+  preview.textContent = '✓ Listo para guardar: ' + parts.join(', ');
+  document.getElementById('save-btn').disabled = false;
+};
+
 // ─── SAVE ENTRY ───────────────────────────────────────────────────────────────
 window.saveEntry = async () => {
   const btn = document.getElementById('save-btn');
@@ -225,6 +325,25 @@ window.saveEntry = async () => {
       const existing = appData.weight_log.find(w => w.date === date);
       if (existing) await setDoc(userDoc('weight_log', existing._id), { date, weight });
       else await addDoc(userCol('weight_log'), { date, weight });
+
+    } else if (currentTab === 'json') {
+      const text = document.getElementById('j-input').value.trim();
+      const result = parseAndValidateJSON(text);
+      if (result.error) { showToast(result.error, true); return; }
+      const writes = [
+        ...result.sessions.map(s     => addDoc(userCol('sessions'),     s)),
+        ...result.weight_log.map(w   => addDoc(userCol('weight_log'),   w)),
+        ...result.strength_log.map(sl=> addDoc(userCol('strength_log'), sl)),
+      ];
+      if (result.sessions.length) {
+        writes.push(setDoc(doc(db, 'users_registry', currentUser.uid),
+          { sessionCount: increment(result.sessions.length) }, { merge: true }));
+      }
+      await Promise.all(writes);
+      showToast(`✓ Importados: ${result.sessions.length} sesiones, ${result.weight_log.length} pesos, ${result.strength_log.length} pesas`);
+      closeModal();
+      await loadData();
+      return;
     }
     showToast('Guardado correctamente ✓');
     closeModal();
@@ -468,10 +587,17 @@ window.openModal = () => {
 window.closeModal = () => document.getElementById('modal').classList.remove('open');
 window.switchTab  = tab => {
   currentTab=tab;
-  ['cardio','pesas','peso'].forEach((t,i)=>{
+  ['cardio','pesas','peso','json'].forEach((t,i)=>{
     document.getElementById('tab-'+t).style.display=t===tab?'':'none';
     document.querySelectorAll('.tab-btn')[i].classList.toggle('active',t===tab);
   });
+  if (tab==='json') {
+    document.getElementById('j-input').value='';
+    document.getElementById('j-preview').textContent='';
+    document.getElementById('save-btn').disabled=true;
+  } else {
+    document.getElementById('save-btn').disabled=false;
+  }
 };
 window.addExercise = () => {
   const r=document.createElement('div'); r.className='exercise-row';
@@ -628,6 +754,7 @@ footer{text-align:center;font-size:11px;color:#444;margin-top:24px;padding-botto
       <button class="tab-btn active" onclick="switchTab('cardio')">Cardio</button>
       <button class="tab-btn" onclick="switchTab('pesas')">Pesas</button>
       <button class="tab-btn" onclick="switchTab('peso')">Peso</button>
+      <button class="tab-btn" onclick="switchTab('json')">JSON</button>
     </div>
     <div id="tab-cardio">
       <div class="form-group"><label>Fecha</label><input type="date" id="c-date"></div>
@@ -676,6 +803,49 @@ footer{text-align:center;font-size:11px;color:#444;margin-top:24px;padding-botto
       <div class="form-group"><label>Fecha</label><input type="date" id="w-date"></div>
       <div class="form-group"><label>Peso (kg)</label><input type="number" id="w-weight" step="0.01" placeholder="69.80"></div>
     </div>
+    <div id="tab-json" style="display:none">
+      <p style="font-size:12px;color:#888;margin-bottom:12px;line-height:1.6;">
+        Pega un JSON con el formato <code style="color:#5BA3E8">{ sessions, weight_log, strength_log }</code>.<br>
+        Los campos desconocidos o inválidos se ignoran automáticamente.
+      </p>
+      <div class="form-group">
+        <label>JSON</label>
+        <textarea id="j-input" placeholder='{"sessions":[{"date":"2025-06-08","type":"carrera","duration":30,"distance":3.5,"calories":250,"hr_avg":150,"pace":8.57,"notes":""}]}'
+          style="min-height:160px;font-family:monospace;font-size:11px;"
+          oninput="previewJSON()"></textarea>
+      </div>
+      <p id="j-preview" style="font-size:12px;min-height:18px;margin-bottom:4px;"></p>
+      <details style="margin-top:8px;">
+        <summary style="font-size:11px;color:#555;cursor:pointer;">Ver formato esperado</summary>
+        <pre style="font-size:10px;color:#666;background:#111;padding:10px;border-radius:8px;margin-top:8px;overflow-x:auto;line-height:1.5;">{
+  "sessions": [{
+    "date": "2025-06-08",       // requerido  YYYY-MM-DD
+    "type": "carrera",          // requerido  carrera|caminadora|bici|caminata|pesas|otro
+    "duration": 30,             // minutos
+    "distance": 3.5,            // km
+    "calories": 250,
+    "hr_avg": 150,              // lpm
+    "pace": 8.57,               // min/km
+    "notes": ""
+  }],
+  "weight_log": [{
+    "date": "2025-06-08",
+    "weight": 69.5              // kg  (20–300)
+  }],
+  "strength_log": [{
+    "date": "2025-06-08",
+    "muscle_group": "Piernas",
+    "exercises": [{
+      "name": "Prensa",
+      "sets": 3,
+      "reps": 12,
+      "weight": "80 lbs"
+    }]
+  }]
+}</pre>
+      </details>
+    </div>
+
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" id="save-btn" onclick="saveEntry()">Guardar</button>
