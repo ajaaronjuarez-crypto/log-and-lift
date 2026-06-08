@@ -58,39 +58,138 @@ async function loadData() {
   document.getElementById('app').innerHTML = '<div class="loading">Cargando datos...</div>';
 
   const [sessSnap, weightSnap, strengthSnap, profileSnap] = await Promise.all([
-    getDocs(query(userCol('sessions'),  orderBy('date'))),
+    getDocs(query(userCol('sessions'),   orderBy('date'))),
     getDocs(query(userCol('weight_log'), orderBy('date'))),
     getDocs(query(userCol('strength_log'), orderBy('date'))),
     getDocs(userCol('profile'))
   ]);
 
+  const profile = profileSnap.docs[0]?.data() || null;
+
   appData = {
-    profile:      profileSnap.docs[0]?.data() || { altura: 1.70, edad: 33 },
+    profile:      profile,
     sessions:     sessSnap.docs.map(d => ({ _id: d.id, ...d.data() })),
     weight_log:   weightSnap.docs.map(d => ({ _id: d.id, ...d.data() })),
     strength_log: strengthSnap.docs.map(d => ({ _id: d.id, ...d.data() }))
   };
 
-  // Si no hay datos, cargar los históricos del JSON original
-  if (appData.sessions.length === 0) {
-    await seedInitialData();
-    return loadData();
+  // Usuario nuevo: sin perfil → mostrar onboarding
+  if (!profile) {
+    renderOnboarding();
+    return;
   }
 
   renderApp();
 }
 
-async function seedInitialData() {
-  const initial = await fetch('data/sessions.json').then(r => r.json()).catch(() => null);
-  if (!initial) return;
+// ─── ONBOARDING ───────────────────────────────────────────────────────────────
+function renderOnboarding() {
+  document.getElementById('app').innerHTML = `
+    <div class="onboarding-card">
+      <p style="font-size:22px;margin-bottom:6px;">👋 Bienvenido a Log & Lift</p>
+      <p style="color:#888;font-size:13px;margin-bottom:28px;">Cuéntanos un poco sobre ti para empezar.</p>
 
-  await Promise.all([
-    ...initial.sessions.map(s    => addDoc(userCol('sessions'),     s)),
-    ...initial.weight_log.map(w  => addDoc(userCol('weight_log'),   w)),
-    ...initial.strength_log.map(sl => addDoc(userCol('strength_log'), sl)),
-    setDoc(doc(userCol('profile'), 'main'), initial.profile)
-  ]);
+      <div class="form-row">
+        <div class="form-group">
+          <label>Nombre</label>
+          <input type="text" id="ob-name" placeholder="Tu nombre">
+        </div>
+        <div class="form-group">
+          <label>Edad</label>
+          <input type="number" id="ob-edad" placeholder="33" min="10" max="100">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Altura (m)</label>
+          <input type="number" id="ob-altura" placeholder="1.70" step="0.01">
+        </div>
+        <div class="form-group">
+          <label>Peso inicial (kg)</label>
+          <input type="number" id="ob-peso" placeholder="70.0" step="0.01">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Objetivo de peso (kg)</label>
+        <input type="number" id="ob-objetivo" placeholder="65.0" step="0.01">
+      </div>
+
+      <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="saveOnboarding()">
+        Comenzar →
+      </button>
+
+      <div style="margin-top:20px;padding-top:20px;border-top:0.5px solid #2A2A2A;">
+        <p style="font-size:11px;color:#666;margin-bottom:10px;">¿Tienes datos históricos en JSON?</p>
+        <button class="btn btn-secondary" style="width:100%;font-size:12px;" onclick="document.getElementById('import-file').click()">
+          📂 Importar backup JSON
+        </button>
+        <input type="file" id="import-file" accept=".json" style="display:none" onchange="importFromFile(event)">
+        <p style="font-size:10px;color:#555;margin-top:6px;text-align:center;">Acepta el archivo <code>data/sessions.json</code></p>
+      </div>
+    </div>
+  `;
 }
+
+window.saveOnboarding = async () => {
+  const name    = document.getElementById('ob-name').value.trim();
+  const edad    = parseInt(document.getElementById('ob-edad').value);
+  const altura  = parseFloat(document.getElementById('ob-altura').value);
+  const peso    = parseFloat(document.getElementById('ob-peso').value);
+  const objetivo= parseFloat(document.getElementById('ob-objetivo').value);
+
+  if (!altura || !edad) { showToast('Altura y edad son obligatorias', true); return; }
+
+  const profile = { name, edad, altura, objetivo: objetivo || null };
+  await setDoc(doc(userCol('profile'), 'main'), profile);
+
+  if (peso) {
+    await addDoc(userCol('weight_log'), { date: new Date().toISOString().slice(0,10), weight: peso });
+  }
+
+  await loadData();
+};
+
+window.importFromFile = async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const json = JSON.parse(text);
+    await importData(json);
+  } catch (e) {
+    showToast('Error al leer el archivo: ' + e.message, true);
+  }
+};
+
+async function importData(json) {
+  showToast('Importando datos...');
+
+  // Guardar perfil si no existe
+  if (json.profile) {
+    await setDoc(doc(userCol('profile'), 'main'), json.profile);
+  }
+
+  // Importar colecciones en paralelo
+  const writes = [
+    ...(json.sessions     || []).map(s  => addDoc(userCol('sessions'),     s)),
+    ...(json.weight_log   || []).map(w  => addDoc(userCol('weight_log'),   w)),
+    ...(json.strength_log || []).map(sl => addDoc(userCol('strength_log'), sl)),
+  ];
+  await Promise.all(writes);
+
+  showToast(`✓ ${json.sessions?.length || 0} sesiones importadas`);
+  await loadData();
+}
+
+window.importHistorical = async () => {
+  try {
+    const json = await fetch('data/sessions.json').then(r => r.json());
+    await importData(json);
+  } catch (e) {
+    showToast('No se encontró data/sessions.json', true);
+  }
+};
 
 // ─── SAVE HELPERS ─────────────────────────────────────────────────────────────
 window.saveEntry = async () => {
@@ -283,7 +382,15 @@ function renderApp() {
 
     <div class="section">
       <p class="section-title">📅 Registro de sesiones</p>
-      ${sessions.length === 0 ? '<p style="color:#666;font-size:13px;">Sin sesiones registradas. Usa el botón + para agregar.</p>' : `
+      ${sessions.length === 0 ? `
+        <div class="empty-state">
+          <p>Sin sesiones registradas aún.</p>
+          <button class="btn-import" onclick="document.getElementById('import-file-dash').click()">
+            📂 Importar desde JSON
+          </button>
+          <input type="file" id="import-file-dash" accept=".json" style="display:none" onchange="importFromFile(event)">
+          <p style="margin-top:12px;font-size:11px;color:#555;">O usa el botón <strong style="color:#888">+</strong> para registrar tu primera sesión.</p>
+        </div>` : `
       <div class="gym-log">
         ${sessions.slice().reverse().map(s => `
           <div class="gym-day">
@@ -507,6 +614,13 @@ function calcWeekNum(sessions) {
   .toast.show { opacity:1; }
   .toast.error { background:#F87171; }
   .loading { text-align:center; color:#666; font-size:13px; padding:40px; }
+
+  /* Onboarding */
+  .onboarding-card { background:#1A1A1A; border:0.5px solid #2A2A2A; border-radius:16px; padding:28px; max-width:480px; margin:60px auto 0; }
+  .empty-state { text-align:center; padding:32px 16px; }
+  .empty-state p { color:#666; font-size:13px; margin-bottom:16px; }
+  .btn-import { display:inline-flex; align-items:center; gap:8px; background:#1A3A5C; border:none; border-radius:8px; color:#5BA3E8; font-size:13px; font-weight:500; padding:10px 20px; cursor:pointer; }
+  .btn-import:hover { background:#1d4570; }
 </style>
 </head>
 <body>
