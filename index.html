@@ -10,7 +10,7 @@
 import { initializeApp }       from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
                                from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-import { getFirestore, collection, doc, getDoc, getDocs, addDoc, setDoc, deleteDoc, writeBatch, query, orderBy }
+import { getFirestore, collection, doc, getDoc, getDocs, addDoc, setDoc, deleteDoc, writeBatch, query, orderBy, increment }
                                from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
@@ -176,6 +176,7 @@ window.resetHistory = async () => {
     snap.docs.forEach(d => batch.delete(d.ref));
     await batch.commit();
   }
+  await setDoc(doc(db, 'users_registry', currentUser.uid), { sessionCount: 0 }, { merge: true });
   appData = null;
   showToast('Historial eliminado');
   await loadData();
@@ -197,6 +198,7 @@ window.saveEntry = async () => {
       const pace     = (duration && distance) ? parseFloat((duration/distance).toFixed(2)) : null;
       if (!date || !type) { showToast('Fecha y tipo son obligatorios', true); return; }
       await addDoc(userCol('sessions'), { date, type, duration, distance, calories, hr_avg, pace, notes });
+      await setDoc(doc(db, 'users_registry', currentUser.uid), { sessionCount: increment(1) }, { merge: true });
 
     } else if (currentTab === 'pesas') {
       const date     = document.getElementById('p-date').value;
@@ -212,7 +214,8 @@ window.saveEntry = async () => {
       }).filter(e => e.name);
       await Promise.all([
         addDoc(userCol('sessions'),     { date, type:'pesas', duration, distance:null, calories, hr_avg:null, pace:null, notes }),
-        addDoc(userCol('strength_log'), { date, muscle_group: group, exercises })
+        addDoc(userCol('strength_log'), { date, muscle_group: group, exercises }),
+        setDoc(doc(db, 'users_registry', currentUser.uid), { sessionCount: increment(1) }, { merge: true })
       ]);
 
     } else if (currentTab === 'peso') {
@@ -245,11 +248,10 @@ window.openAdminPanel = async () => {
 
   const disabledSet = new Set(disabledSnap.docs.map(d => d.id));
 
-  // Contar sesiones por usuario
-  const users = await Promise.all(regSnap.docs.map(async d => {
-    const data = d.data();
-    const sessSnap = await getDocs(collection(db, 'users', d.id, 'sessions'));
-    return { uid: d.id, ...data, sesiones: sessSnap.size, disabled: disabledSet.has(d.id) };
+  const users = regSnap.docs.map(d => ({
+    uid: d.id,
+    ...d.data(),
+    disabled: disabledSet.has(d.id)
   }));
 
   users.sort((a,b) => (b.fechaRegistro||'').localeCompare(a.fechaRegistro||''));
@@ -260,7 +262,7 @@ window.openAdminPanel = async () => {
       <div class="admin-user-info">
         <p class="admin-user-name">${u.nombre || '—'} ${u.uid === currentUser.uid ? '<span class="badge">Tú</span>' : ''} ${u.disabled ? '<span style="background:#3A1010;color:#F87171;font-size:10px;padding:2px 8px;border-radius:20px;margin-left:4px;">Bloqueado</span>' : ''}</p>
         <p class="admin-user-email">${u.email}</p>
-        <p class="admin-user-meta">${u.sesiones} sesiones · Registro: ${fmtDateShort(u.fechaRegistro?.slice(0,10))} · Último login: ${fmtDateShort(u.ultimoLogin?.slice(0,10))}</p>
+        <p class="admin-user-meta">${u.sessionCount || 0} sesiones · Registro: ${fmtDateShort(u.fechaRegistro?.slice(0,10))} · Último login: ${fmtDateShort(u.ultimoLogin?.slice(0,10))}</p>
       </div>
       ${u.uid !== currentUser.uid ? `
         <button class="btn-toggle-user ${u.disabled ? 'btn-enable' : 'btn-disable'}"
