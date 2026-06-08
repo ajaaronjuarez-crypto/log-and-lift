@@ -7,78 +7,76 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="firebase-config.js"></script>
 <script type="module">
-import { initializeApp }                          from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { initializeApp }       from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
-                                                  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-import { getFirestore, collection, doc, getDocs, addDoc, setDoc, deleteDoc, query, orderBy }
-                                                  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+                               from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import { getFirestore, collection, doc, getDoc, getDocs, addDoc, setDoc, deleteDoc, writeBatch, query, orderBy }
+                               from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
-// ─── INIT ────────────────────────────────────────────────────────────────────
+// ─── INIT ─────────────────────────────────────────────────────────────────────
 const app  = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
 const db   = getFirestore(app);
 
-let currentUser = null;
-let appData     = null;
+let currentUser  = null;
+let isAdmin      = false;
+let appData      = null;
 let chartInstances = {};
-let currentTab  = 'cardio';
+let currentTab   = 'cardio';
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
-onAuthStateChanged(auth, user => {
+onAuthStateChanged(auth, async user => {
   currentUser = user;
-  if (user) {
-    showApp();
-    loadData();
-  } else {
-    showLogin();
-  }
+  if (!user) { showLogin(); return; }
+
+  // 1. Registrar/actualizar en users_registry
+  await setDoc(doc(db, 'users_registry', user.uid), {
+    email:         user.email,
+    nombre:        user.displayName || '',
+    foto:          user.photoURL    || '',
+    ultimoLogin:   new Date().toISOString(),
+    ...(!(await getDoc(doc(db, 'users_registry', user.uid))).exists()
+      ? { fechaRegistro: new Date().toISOString() } : {})
+  }, { merge: true });
+
+  // 2. Verificar si está desactivado
+  const disabledSnap = await getDoc(doc(db, 'disabled_users', user.uid));
+  if (disabledSnap.exists()) { showBlocked(); return; }
+
+  // 3. Verificar si es admin
+  const adminSnap = await getDoc(doc(db, 'admins', user.uid));
+  isAdmin = adminSnap.exists();
+
+  showApp();
+  loadData();
 });
 
 window.loginWithGoogle = async () => {
-  try {
-    await signInWithPopup(auth, new GoogleAuthProvider());
-  } catch (e) {
-    showToast('Error al iniciar sesión: ' + e.message, true);
-  }
+  try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+  catch (e) { showToast('Error al iniciar sesión: ' + e.message, true); }
 };
-
-window.logout = async () => {
-  await signOut(auth);
-};
+window.logout = async () => { await signOut(auth); };
 
 // ─── FIRESTORE HELPERS ────────────────────────────────────────────────────────
-function userCol(colName) {
-  return collection(db, 'users', currentUser.uid, colName);
-}
-function userDoc(colName, id) {
-  return doc(db, 'users', currentUser.uid, colName, id);
-}
+const userCol = name      => collection(db, 'users', currentUser.uid, name);
+const userDoc = (name,id) => doc(db, 'users', currentUser.uid, name, id);
 
 async function loadData() {
   document.getElementById('app').innerHTML = '<div class="loading">Cargando datos...</div>';
-
   const [sessSnap, weightSnap, strengthSnap, profileSnap] = await Promise.all([
-    getDocs(query(userCol('sessions'),   orderBy('date'))),
-    getDocs(query(userCol('weight_log'), orderBy('date'))),
+    getDocs(query(userCol('sessions'),     orderBy('date'))),
+    getDocs(query(userCol('weight_log'),   orderBy('date'))),
     getDocs(query(userCol('strength_log'), orderBy('date'))),
     getDocs(userCol('profile'))
   ]);
-
   const profile = profileSnap.docs[0]?.data() || null;
-
   appData = {
-    profile:      profile,
+    profile,
     sessions:     sessSnap.docs.map(d => ({ _id: d.id, ...d.data() })),
     weight_log:   weightSnap.docs.map(d => ({ _id: d.id, ...d.data() })),
     strength_log: strengthSnap.docs.map(d => ({ _id: d.id, ...d.data() }))
   };
-
-  // Usuario nuevo: sin perfil → mostrar onboarding
-  if (!profile) {
-    renderOnboarding();
-    return;
-  }
-
+  if (!profile) { renderOnboarding(); return; }
   renderApp();
 }
 
@@ -88,46 +86,28 @@ function renderOnboarding() {
     <div class="onboarding-card">
       <p style="font-size:22px;margin-bottom:6px;">👋 Bienvenido a Log & Lift</p>
       <p style="color:#888;font-size:13px;margin-bottom:28px;">Cuéntanos un poco sobre ti para empezar.</p>
-
       <div class="form-row">
-        <div class="form-group">
-          <label>Nombre</label>
-          <input type="text" id="ob-name" placeholder="Tu nombre">
-        </div>
-        <div class="form-group">
-          <label>Edad</label>
-          <input type="number" id="ob-edad" placeholder="33" min="10" max="100">
-        </div>
+        <div class="form-group"><label>Nombre</label><input type="text" id="ob-name" placeholder="Tu nombre"></div>
+        <div class="form-group"><label>Edad</label><input type="number" id="ob-edad" placeholder="33" min="10" max="100"></div>
       </div>
       <div class="form-row">
-        <div class="form-group">
-          <label>Altura (m)</label>
-          <input type="number" id="ob-altura" placeholder="1.70" step="0.01">
-        </div>
-        <div class="form-group">
-          <label>Peso inicial (kg)</label>
-          <input type="number" id="ob-peso" placeholder="70.0" step="0.01">
-        </div>
+        <div class="form-group"><label>Altura (m)</label><input type="number" id="ob-altura" placeholder="1.70" step="0.01"></div>
+        <div class="form-group"><label>Peso inicial (kg)</label><input type="number" id="ob-peso" placeholder="70.0" step="0.01"></div>
       </div>
       <div class="form-group">
         <label>Objetivo de peso (kg)</label>
         <input type="number" id="ob-objetivo" placeholder="65.0" step="0.01">
       </div>
-
-      <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="saveOnboarding()">
-        Comenzar →
-      </button>
-
+      <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="saveOnboarding()">Comenzar →</button>
       <div style="margin-top:20px;padding-top:20px;border-top:0.5px solid #2A2A2A;">
-        <p style="font-size:11px;color:#666;margin-bottom:10px;">¿Tienes datos históricos en JSON?</p>
-        <button class="btn btn-secondary" style="width:100%;font-size:12px;" onclick="document.getElementById('import-file').click()">
+        <p style="font-size:11px;color:#666;margin-bottom:10px;">¿Tienes un backup en JSON?</p>
+        <button class="btn btn-secondary" style="width:100%;font-size:12px;" onclick="document.getElementById('import-ob').click()">
           📂 Importar backup JSON
         </button>
-        <input type="file" id="import-file" accept=".json" style="display:none" onchange="importFromFile(event)">
+        <input type="file" id="import-ob" accept=".json" style="display:none" onchange="importFromFile(event)">
         <p style="font-size:10px;color:#555;margin-top:6px;text-align:center;">Acepta el archivo <code>data/sessions.json</code></p>
       </div>
-    </div>
-  `;
+    </div>`;
 }
 
 window.saveOnboarding = async () => {
@@ -136,67 +116,75 @@ window.saveOnboarding = async () => {
   const altura  = parseFloat(document.getElementById('ob-altura').value);
   const peso    = parseFloat(document.getElementById('ob-peso').value);
   const objetivo= parseFloat(document.getElementById('ob-objetivo').value);
-
   if (!altura || !edad) { showToast('Altura y edad son obligatorias', true); return; }
-
-  const profile = { name, edad, altura, objetivo: objetivo || null };
-  await setDoc(doc(userCol('profile'), 'main'), profile);
-
-  if (peso) {
-    await addDoc(userCol('weight_log'), { date: new Date().toISOString().slice(0,10), weight: peso });
-  }
-
+  await setDoc(doc(userCol('profile'), 'main'), { name, edad, altura, objetivo: objetivo || null });
+  if (peso) await addDoc(userCol('weight_log'), { date: new Date().toISOString().slice(0,10), weight: peso });
   await loadData();
 };
 
 window.importFromFile = async (event) => {
   const file = event.target.files[0];
   if (!file) return;
-
-  try {
-    const text = await file.text();
-    const json = JSON.parse(text);
-    await importData(json);
-  } catch (e) {
-    showToast('Error al leer el archivo: ' + e.message, true);
-  }
+  try { await importData(JSON.parse(await file.text())); }
+  catch (e) { showToast('Error al leer el archivo: ' + e.message, true); }
 };
 
 async function importData(json) {
   showToast('Importando datos...');
-
-  // Guardar perfil si no existe
-  if (json.profile) {
-    await setDoc(doc(userCol('profile'), 'main'), json.profile);
-  }
-
-  // Importar colecciones en paralelo
-  const writes = [
+  if (json.profile) await setDoc(doc(userCol('profile'), 'main'), json.profile);
+  await Promise.all([
     ...(json.sessions     || []).map(s  => addDoc(userCol('sessions'),     s)),
     ...(json.weight_log   || []).map(w  => addDoc(userCol('weight_log'),   w)),
     ...(json.strength_log || []).map(sl => addDoc(userCol('strength_log'), sl)),
-  ];
-  await Promise.all(writes);
-
+  ]);
   showToast(`✓ ${json.sessions?.length || 0} sesiones importadas`);
   await loadData();
 }
 
-window.importHistorical = async () => {
-  try {
-    const json = await fetch('data/sessions.json').then(r => r.json());
-    await importData(json);
-  } catch (e) {
-    showToast('No se encontró data/sessions.json', true);
-  }
+// ─── EXPORT ───────────────────────────────────────────────────────────────────
+window.exportData = () => {
+  if (!appData) return;
+  const exportObj = {
+    exportedAt: new Date().toISOString(),
+    profile:      appData.profile,
+    sessions:     appData.sessions.map(({ _id, ...s }) => s),
+    weight_log:   appData.weight_log.map(({ _id, ...w }) => w),
+    strength_log: appData.strength_log.map(({ _id, ...sl }) => sl)
+  };
+  const blob = new Blob([JSON.stringify(exportObj, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `log-and-lift-backup-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  showToast('Historial exportado ✓');
 };
 
-// ─── SAVE HELPERS ─────────────────────────────────────────────────────────────
+// ─── RESET ────────────────────────────────────────────────────────────────────
+window.confirmReset = () => {
+  document.getElementById('confirm-modal').classList.add('open');
+};
+window.closeConfirm = () => {
+  document.getElementById('confirm-modal').classList.remove('open');
+};
+window.resetHistory = async () => {
+  closeConfirm();
+  document.getElementById('app').innerHTML = '<div class="loading">Borrando historial...</div>';
+  const colNames = ['sessions', 'weight_log', 'strength_log', 'profile'];
+  for (const name of colNames) {
+    const snap = await getDocs(userCol(name));
+    const batch = writeBatch(db);
+    snap.docs.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+  }
+  appData = null;
+  showToast('Historial eliminado');
+  await loadData();
+};
+
+// ─── SAVE ENTRY ───────────────────────────────────────────────────────────────
 window.saveEntry = async () => {
   const btn = document.getElementById('save-btn');
-  btn.disabled = true;
-  btn.textContent = 'Guardando...';
-
+  btn.disabled = true; btn.textContent = 'Guardando...';
   try {
     if (currentTab === 'cardio') {
       const date     = document.getElementById('c-date').value;
@@ -206,7 +194,7 @@ window.saveEntry = async () => {
       const calories = parseInt(document.getElementById('c-calories').value)   || null;
       const hr_avg   = parseInt(document.getElementById('c-hr').value)          || null;
       const notes    = document.getElementById('c-notes').value.trim();
-      const pace     = (duration && distance) ? parseFloat((duration / distance).toFixed(2)) : null;
+      const pace     = (duration && distance) ? parseFloat((duration/distance).toFixed(2)) : null;
       if (!date || !type) { showToast('Fecha y tipo son obligatorios', true); return; }
       await addDoc(userCol('sessions'), { date, type, duration, distance, calories, hr_avg, pace, notes });
 
@@ -217,15 +205,13 @@ window.saveEntry = async () => {
       const calories = parseInt(document.getElementById('p-calories').value)  || null;
       const notes    = document.getElementById('p-notes').value.trim();
       if (!date) { showToast('La fecha es obligatoria', true); return; }
-
       const rows = document.getElementById('exercises-list').querySelectorAll('.exercise-row');
       const exercises = Array.from(rows).map(r => {
-        const inputs = r.querySelectorAll('input');
-        return { name: inputs[0].value.trim(), sets: parseInt(inputs[1].value)||null, reps: parseInt(inputs[2].value)||null, weight: inputs[3].value.trim() };
+        const [n,s,rp,w] = r.querySelectorAll('input');
+        return { name: n.value.trim(), sets: parseInt(s.value)||null, reps: parseInt(rp.value)||null, weight: w.value.trim() };
       }).filter(e => e.name);
-
       await Promise.all([
-        addDoc(userCol('sessions'),     { date, type: 'pesas', duration, distance: null, calories, hr_avg: null, pace: null, notes }),
+        addDoc(userCol('sessions'),     { date, type:'pesas', duration, distance:null, calories, hr_avg:null, pace:null, notes }),
         addDoc(userCol('strength_log'), { date, muscle_group: group, exercises })
       ]);
 
@@ -233,30 +219,77 @@ window.saveEntry = async () => {
       const date   = document.getElementById('w-date').value;
       const weight = parseFloat(document.getElementById('w-weight').value);
       if (!date || isNaN(weight)) { showToast('Fecha y peso son obligatorios', true); return; }
-
-      // Buscar si ya existe registro de ese día
       const existing = appData.weight_log.find(w => w.date === date);
-      if (existing) {
-        await setDoc(userDoc('weight_log', existing._id), { date, weight });
-      } else {
-        await addDoc(userCol('weight_log'), { date, weight });
-      }
+      if (existing) await setDoc(userDoc('weight_log', existing._id), { date, weight });
+      else await addDoc(userCol('weight_log'), { date, weight });
     }
-
     showToast('Guardado correctamente ✓');
     closeModal();
     await loadData();
   } catch (e) {
     showToast('Error: ' + e.message, true);
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Guardar';
+    btn.disabled = false; btn.textContent = 'Guardar';
   }
 };
 
-// ─── RENDER LOGIN ─────────────────────────────────────────────────────────────
+// ─── ADMIN PANEL ──────────────────────────────────────────────────────────────
+window.openAdminPanel = async () => {
+  document.getElementById('admin-panel').classList.add('open');
+  document.getElementById('admin-body').innerHTML = '<p style="color:#666;text-align:center;padding:20px;font-size:13px;">Cargando usuarios...</p>';
+
+  const [regSnap, disabledSnap] = await Promise.all([
+    getDocs(collection(db, 'users_registry')),
+    getDocs(collection(db, 'disabled_users'))
+  ]);
+
+  const disabledSet = new Set(disabledSnap.docs.map(d => d.id));
+
+  // Contar sesiones por usuario
+  const users = await Promise.all(regSnap.docs.map(async d => {
+    const data = d.data();
+    const sessSnap = await getDocs(collection(db, 'users', d.id, 'sessions'));
+    return { uid: d.id, ...data, sesiones: sessSnap.size, disabled: disabledSet.has(d.id) };
+  }));
+
+  users.sort((a,b) => (b.fechaRegistro||'').localeCompare(a.fechaRegistro||''));
+
+  document.getElementById('admin-body').innerHTML = users.map(u => `
+    <div class="admin-user-row ${u.disabled ? 'disabled-user' : ''}">
+      <img class="user-avatar" src="${u.foto || 'https://ui-avatars.com/api/?name='+encodeURIComponent(u.nombre||u.email)+'&background=1A1A1A&color=888'}" alt="">
+      <div class="admin-user-info">
+        <p class="admin-user-name">${u.nombre || '—'} ${u.uid === currentUser.uid ? '<span class="badge">Tú</span>' : ''} ${u.disabled ? '<span style="background:#3A1010;color:#F87171;font-size:10px;padding:2px 8px;border-radius:20px;margin-left:4px;">Bloqueado</span>' : ''}</p>
+        <p class="admin-user-email">${u.email}</p>
+        <p class="admin-user-meta">${u.sesiones} sesiones · Registro: ${fmtDateShort(u.fechaRegistro?.slice(0,10))} · Último login: ${fmtDateShort(u.ultimoLogin?.slice(0,10))}</p>
+      </div>
+      ${u.uid !== currentUser.uid ? `
+        <button class="btn-toggle-user ${u.disabled ? 'btn-enable' : 'btn-disable'}"
+          onclick="toggleUser('${u.uid}', ${u.disabled})">
+          ${u.disabled ? 'Reactivar' : 'Bloquear'}
+        </button>` : ''}
+    </div>
+  `).join('') || '<p style="color:#666;text-align:center;padding:20px;font-size:13px;">No hay usuarios registrados.</p>';
+};
+
+window.closeAdminPanel = () => {
+  document.getElementById('admin-panel').classList.remove('open');
+};
+
+window.toggleUser = async (uid, isDisabled) => {
+  if (isDisabled) {
+    await deleteDoc(doc(db, 'disabled_users', uid));
+    showToast('Usuario reactivado ✓');
+  } else {
+    await setDoc(doc(db, 'disabled_users', uid), { disabledAt: new Date().toISOString() });
+    showToast('Usuario bloqueado');
+  }
+  await openAdminPanel();
+};
+
+// ─── RENDER STATES ────────────────────────────────────────────────────────────
 function showLogin() {
   document.getElementById('header-bar').style.display = 'none';
+  document.querySelector('.fab')?.remove();
   document.getElementById('app').innerHTML = `
     <div class="login-screen">
       <div class="login-card">
@@ -272,19 +305,27 @@ function showLogin() {
           Continuar con Google
         </button>
       </div>
-    </div>
-  `;
-  document.querySelector('.fab')?.remove();
+    </div>`;
+}
+
+function showBlocked() {
+  document.getElementById('header-bar').style.display = 'flex';
+  document.getElementById('app').innerHTML = `
+    <div class="login-screen">
+      <div class="login-card">
+        <p style="font-size:40px;margin-bottom:12px;">🚫</p>
+        <h2 style="margin-bottom:8px;">Acceso restringido</h2>
+        <p style="color:#888;font-size:13px;margin-bottom:24px;">Tu cuenta ha sido desactivada.<br>Contacta al administrador.</p>
+        <button class="btn-logout" onclick="logout()">Cerrar sesión</button>
+      </div>
+    </div>`;
 }
 
 function showApp() {
   document.getElementById('header-bar').style.display = 'flex';
+  document.getElementById('header-admin-btn').style.display = isAdmin ? 'inline-flex' : 'none';
   if (!document.querySelector('.fab')) {
-    const fab = document.createElement('button');
-    fab.className = 'fab';
-    fab.title = 'Registrar sesión';
-    fab.textContent = '+';
-    fab.onclick = openModal;
+    const fab = Object.assign(document.createElement('button'), { className:'fab', title:'Registrar sesión', textContent:'+', onclick: openModal });
     document.body.appendChild(fab);
   }
 }
@@ -295,21 +336,21 @@ function renderApp() {
   const sessions = d.sessions.slice().sort((a,b) => a.date.localeCompare(b.date));
   const weights  = d.weight_log.slice().sort((a,b) => a.date.localeCompare(b.date));
   const strength = d.strength_log.slice().sort((a,b) => a.date.localeCompare(b.date));
-
-  const latestWeight = weights.length ? weights[weights.length-1].weight : null;
-  const firstWeight  = weights.length ? weights[0].weight : null;
-  const weightDiff   = latestWeight && firstWeight ? (latestWeight - firstWeight).toFixed(2) : null;
-  const imc          = latestWeight ? (latestWeight / (d.profile.altura ** 2)).toFixed(1) : '—';
-  const cardioSess   = sessions.filter(s => s.pace);
-  const bestPace     = cardioSess.length ? Math.min(...cardioSess.map(s => s.pace)) : null;
-  const totalKcal    = sessions.reduce((sum,s) => sum + (s.calories||0), 0);
-  const totalKm      = sessions.reduce((sum,s) => sum + (s.distance||0), 0);
-  const activeDays   = new Set(sessions.map(s => s.date)).size;
-  const weekNum      = calcWeekNum(sessions);
+  const latestW  = weights.at(-1)?.weight ?? null;
+  const firstW   = weights[0]?.weight     ?? null;
+  const diff     = latestW && firstW ? (latestW - firstW).toFixed(2) : null;
+  const imc      = latestW ? (latestW / d.profile.altura**2).toFixed(1) : '—';
+  const cardio   = sessions.filter(s => s.pace);
+  const bestPace = cardio.length ? Math.min(...cardio.map(s => s.pace)) : null;
+  const totalKcal= sessions.reduce((s,x) => s+(x.calories||0), 0);
+  const totalKm  = sessions.reduce((s,x) => s+(x.distance||0), 0);
+  const days     = new Set(sessions.map(s => s.date)).size;
+  const weekNum  = calcWeekNum(sessions);
+  const objetivo = d.profile.objetivo || 65;
 
   function fp(p) {
     if (!p) return '—';
-    const m = Math.floor(p), s = Math.round((p-m)*60);
+    const m=Math.floor(p), s=Math.round((p-m)*60);
     return `${m}'${String(s).padStart(2,'0')}"`;
   }
 
@@ -318,53 +359,29 @@ function renderApp() {
 
   document.getElementById('app').innerHTML = `
     <h1>Log & Lift <span class="badge">Semana ${weekNum}</span></h1>
-    <p class="subtitle">${sessions.length ? fmtDate(sessions[0].date) + ' — ' + fmtDate(sessions[sessions.length-1].date) : 'Sin sesiones aún'} · ${d.profile.edad} años · ${d.profile.altura}m</p>
+    <p class="subtitle">${sessions.length ? fmtDate(sessions[0].date)+' — '+fmtDate(sessions.at(-1).date) : 'Sin sesiones aún'} · ${d.profile.edad} años · ${d.profile.altura}m</p>
 
     <div class="metrics">
-      <div class="metric">
-        <p class="metric-label">Peso actual</p>
-        <p class="metric-value green">${latestWeight ? latestWeight.toFixed(2)+' kg' : '—'}</p>
-        <p class="metric-sub">${weightDiff!==null ? (weightDiff>0?'↑':'↓')+' '+Math.abs(weightDiff)+' kg desde inicio' : 'Sin registros'}</p>
-      </div>
-      <div class="metric">
-        <p class="metric-label">IMC</p>
-        <p class="metric-value blue">${imc}</p>
-        <p class="metric-sub">${imc !== '—' ? 'Rango normal ✓' : ''}</p>
-      </div>
-      <div class="metric">
-        <p class="metric-label">Mejor ritmo</p>
-        <p class="metric-value purple">${fp(bestPace)}</p>
-        <p class="metric-sub">min/km</p>
-      </div>
-      <div class="metric">
-        <p class="metric-label">Días activos</p>
-        <p class="metric-value orange">${activeDays}</p>
-        <p class="metric-sub">Sesiones totales</p>
-      </div>
-      <div class="metric">
-        <p class="metric-label">Kcal activas</p>
-        <p class="metric-value green">${totalKcal.toLocaleString()}</p>
-        <p class="metric-sub">Total quemadas</p>
-      </div>
-      <div class="metric">
-        <p class="metric-label">Distancia</p>
-        <p class="metric-value blue">${totalKm.toFixed(1)} km</p>
-        <p class="metric-sub">Total recorrida</p>
-      </div>
+      <div class="metric"><p class="metric-label">Peso actual</p><p class="metric-value green">${latestW ? latestW.toFixed(2)+' kg':'—'}</p><p class="metric-sub">${diff!==null?(diff>0?'↑':'↓')+' '+Math.abs(diff)+' kg desde inicio':'Sin registros'}</p></div>
+      <div class="metric"><p class="metric-label">IMC</p><p class="metric-value blue">${imc}</p><p class="metric-sub">${imc!=='—'?'Rango normal ✓':''}</p></div>
+      <div class="metric"><p class="metric-label">Mejor ritmo</p><p class="metric-value purple">${fp(bestPace)}</p><p class="metric-sub">min/km</p></div>
+      <div class="metric"><p class="metric-label">Días activos</p><p class="metric-value orange">${days}</p><p class="metric-sub">Sesiones totales</p></div>
+      <div class="metric"><p class="metric-label">Kcal activas</p><p class="metric-value green">${totalKcal.toLocaleString()}</p><p class="metric-sub">Total quemadas</p></div>
+      <div class="metric"><p class="metric-label">Distancia</p><p class="metric-value blue">${totalKm.toFixed(1)} km</p><p class="metric-sub">Total recorrida</p></div>
     </div>
 
-    ${weights.length >= 2 ? `
+    ${weights.length>=2 ? `
     <div class="section">
       <p class="section-title">📊 Progresión de peso</p>
       <div style="height:180px"><canvas id="pesoChart"></canvas></div>
       <div class="progress-bar-container">
-        <div class="progress-label"><span>Inicio: ${firstWeight} kg</span><span>Hoy: ${latestWeight} kg</span></div>
-        <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(100,Math.max(0,((firstWeight-latestWeight)/(firstWeight-65))*100)).toFixed(0)}%"></div></div>
-        <div style="font-size:11px;color:#666;margin-top:4px;">Objetivo estimado: 65–67 kg con músculo ganado</div>
+        <div class="progress-label"><span>Inicio: ${firstW} kg</span><span>Hoy: ${latestW} kg</span></div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(100,Math.max(0,((firstW-latestW)/(firstW-objetivo))*100)).toFixed(0)}%"></div></div>
+        <div style="font-size:11px;color:#666;margin-top:4px;">Objetivo: ${objetivo} kg</div>
       </div>
     </div>` : ''}
 
-    ${cardioSess.length >= 2 ? `
+    ${cardio.length>=2 ? `
     <div class="section">
       <p class="section-title">🏃 Progresión de ritmo (min/km)</p>
       <div style="height:160px"><canvas id="ritmoChart"></canvas></div>
@@ -382,261 +399,224 @@ function renderApp() {
 
     <div class="section">
       <p class="section-title">📅 Registro de sesiones</p>
-      ${sessions.length === 0 ? `
+      ${sessions.length===0 ? `
         <div class="empty-state">
           <p>Sin sesiones registradas aún.</p>
-          <button class="btn-import" onclick="document.getElementById('import-file-dash').click()">
-            📂 Importar desde JSON
-          </button>
-          <input type="file" id="import-file-dash" accept=".json" style="display:none" onchange="importFromFile(event)">
-          <p style="margin-top:12px;font-size:11px;color:#555;">O usa el botón <strong style="color:#888">+</strong> para registrar tu primera sesión.</p>
+          <button class="btn-import" onclick="document.getElementById('import-dash').click()">📂 Importar desde JSON</button>
+          <input type="file" id="import-dash" accept=".json" style="display:none" onchange="importFromFile(event)">
+          <p style="margin-top:10px;font-size:11px;color:#555;">O usa el botón <strong style="color:#888">+</strong> para tu primera sesión.</p>
         </div>` : `
       <div class="gym-log">
-        ${sessions.slice().reverse().map(s => `
+        ${sessions.slice().reverse().map(s=>`
           <div class="gym-day">
-            <div>
-              <p class="gym-date">${fmtDateShort(s.date)}</p>
-              <span class="tag tag-${s.type}">${typeLabel(s.type)}</span>
-            </div>
-            <div>
-              <p class="gym-activity">${sessionDetail(s)}</p>
-              ${s.notes ? `<p style="font-size:11px;color:#666;margin-top:2px;">${s.notes}</p>` : ''}
-            </div>
-            <p class="gym-kcal" style="color:${typeColor(s.type)}">${s.calories ? s.calories+' kcal' : '—'}</p>
-          </div>
-        `).join('')}
+            <div><p class="gym-date">${fmtDateShort(s.date)}</p><span class="tag tag-${s.type}">${typeLabel(s.type)}</span></div>
+            <div><p class="gym-activity">${sessionDetail(s)}</p>${s.notes?`<p style="font-size:11px;color:#666;margin-top:2px;">${s.notes}</p>`:''}</div>
+            <p class="gym-kcal" style="color:${typeColor(s.type)}">${s.calories?s.calories+' kcal':'—'}</p>
+          </div>`).join('')}
       </div>`}
     </div>
 
-    ${strength.slice().reverse().map(sl => `
+    ${strength.slice().reverse().map(sl=>`
     <div class="section">
       <p class="section-title">💪 Pesas · ${sl.muscle_group} — ${fmtDateShort(sl.date)}</p>
       <table class="pesas-table">
         <tr><th>Ejercicio</th><th>Series</th><th>Peso</th></tr>
-        ${sl.exercises.map(e => `<tr><td>${e.name}</td><td>${e.sets}${e.reps?' × '+e.reps:''}</td><td>${e.weight}</td></tr>`).join('')}
+        ${sl.exercises.map(e=>`<tr><td>${e.name}</td><td>${e.sets}${e.reps?' × '+e.reps:''}</td><td>${e.weight}</td></tr>`).join('')}
       </table>
     </div>`).join('')}
 
-    <footer>Log & Lift · Actualizado ${fmtDateShort(new Date().toISOString().slice(0,10))}</footer>
-  `;
+    <footer>Log & Lift · Actualizado ${fmtDateShort(new Date().toISOString().slice(0,10))}</footer>`;
 
-  const grid = 'rgba(255,255,255,0.06)', txt = '#666';
+  const grid='rgba(255,255,255,0.06)', txt='#666';
 
-  if (weights.length >= 2) {
+  if (weights.length>=2) {
     chartInstances.peso = new Chart(document.getElementById('pesoChart'), {
-      type: 'line',
-      data: {
-        labels: weights.map(w => fmtDateShort(w.date)),
-        datasets: [{ data: weights.map(w => w.weight), borderColor: '#4CD9A0', backgroundColor: 'rgba(76,217,160,0.08)', borderWidth: 2, pointBackgroundColor: weights.map((w,i) => i===weights.length-1?'#4CD9A0':'#5BA3E8'), pointRadius: weights.map((w,i) => i===weights.length-1?7:4), fill: true, tension: 0.3 }]
-      },
-      options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y.toFixed(2)+' kg'}}}, scales:{y:{ticks:{color:txt,callback:v=>v+' kg'},grid:{color:grid}},x:{ticks:{color:txt,autoSkip:true,maxTicksLimit:8,font:{size:10}},grid:{color:grid}}} }
+      type:'line', data:{ labels:weights.map(w=>fmtDateShort(w.date)), datasets:[{ data:weights.map(w=>w.weight), borderColor:'#4CD9A0', backgroundColor:'rgba(76,217,160,0.08)', borderWidth:2, pointBackgroundColor:weights.map((_,i)=>i===weights.length-1?'#4CD9A0':'#5BA3E8'), pointRadius:weights.map((_,i)=>i===weights.length-1?7:4), fill:true, tension:0.3 }] },
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y.toFixed(2)+' kg'}}}, scales:{y:{ticks:{color:txt,callback:v=>v+' kg'},grid:{color:grid}},x:{ticks:{color:txt,autoSkip:true,maxTicksLimit:8,font:{size:10}},grid:{color:grid}}} }
     });
   }
-
-  if (cardioSess.length >= 2) {
+  if (cardio.length>=2) {
     chartInstances.ritmo = new Chart(document.getElementById('ritmoChart'), {
-      type: 'line',
-      data: {
-        labels: cardioSess.map(s => fmtDateShort(s.date)),
-        datasets: [{ data: cardioSess.map(s => s.pace), borderColor: '#A78BFA', backgroundColor: 'rgba(167,139,250,0.08)', borderWidth: 2, pointBackgroundColor: cardioSess.map((s,i)=>i===cardioSess.length-1?'#4CD9A0':'#A78BFA'), pointRadius: cardioSess.map((s,i)=>i===cardioSess.length-1?7:4), fill: true, tension: 0.3 }]
-      },
-      options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fp(c.parsed.y)+' min/km'}}}, scales:{y:{reverse:true,ticks:{color:txt,callback:v=>Math.floor(v)+"'"},grid:{color:grid}},x:{ticks:{color:txt,autoSkip:true,maxTicksLimit:8,font:{size:10}},grid:{color:grid}}} }
+      type:'line', data:{ labels:cardio.map(s=>fmtDateShort(s.date)), datasets:[{ data:cardio.map(s=>s.pace), borderColor:'#A78BFA', backgroundColor:'rgba(167,139,250,0.08)', borderWidth:2, pointBackgroundColor:cardio.map((_,i)=>i===cardio.length-1?'#4CD9A0':'#A78BFA'), pointRadius:cardio.map((_,i)=>i===cardio.length-1?7:4), fill:true, tension:0.3 }] },
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fp(c.parsed.y)+' min/km'}}}, scales:{y:{reverse:true,ticks:{color:txt,callback:v=>Math.floor(v)+"'"},grid:{color:grid}},x:{ticks:{color:txt,autoSkip:true,maxTicksLimit:8,font:{size:10}},grid:{color:grid}}} }
     });
   }
-
   if (sessions.length) {
-    const kcalColors = {caminadora:'#185FA5',carrera:'#A78BFA',bici:'#4CD9A0',pesas:'#FB923C',caminata:'#4CD9A0',otro:'#888'};
+    const kColors={caminadora:'#185FA5',carrera:'#A78BFA',bici:'#4CD9A0',pesas:'#FB923C',caminata:'#4CD9A0',otro:'#888'};
     chartInstances.kcal = new Chart(document.getElementById('kcalChart'), {
-      type: 'bar',
-      data: { labels: sessions.map(s=>fmtDateShort(s.date)), datasets:[{data:sessions.map(s=>s.calories||0),backgroundColor:sessions.map(s=>kcalColors[s.type]||'#888'),borderRadius:4}] },
-      options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y+' kcal'}}}, scales:{y:{beginAtZero:true,ticks:{color:txt},grid:{color:grid}},x:{ticks:{color:txt,autoSkip:true,maxTicksLimit:8,font:{size:10}},grid:{color:grid}}} }
+      type:'bar', data:{ labels:sessions.map(s=>fmtDateShort(s.date)), datasets:[{data:sessions.map(s=>s.calories||0),backgroundColor:sessions.map(s=>kColors[s.type]||'#888'),borderRadius:4}] },
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y+' kcal'}}}, scales:{y:{beginAtZero:true,ticks:{color:txt},grid:{color:grid}},x:{ticks:{color:txt,autoSkip:true,maxTicksLimit:8,font:{size:10}},grid:{color:grid}}} }
     });
-
-    const fcSess = sessions.filter(s=>s.hr_avg);
-    if (fcSess.length) {
+    const fc=sessions.filter(s=>s.hr_avg);
+    if (fc.length) {
       chartInstances.fc = new Chart(document.getElementById('fcChart'), {
-        type: 'line',
-        data: { labels: fcSess.map(s=>fmtDateShort(s.date)), datasets:[{data:fcSess.map(s=>s.hr_avg),borderColor:'#F87171',backgroundColor:'rgba(248,113,113,0.07)',borderWidth:2,pointBackgroundColor:'#F87171',pointRadius:4,fill:true,tension:0.3}] },
-        options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y+' lpm'}}}, scales:{y:{ticks:{color:txt,callback:v=>v+' lpm'},grid:{color:grid}},x:{ticks:{color:txt,autoSkip:true,maxTicksLimit:8,font:{size:10}},grid:{color:grid}}} }
+        type:'line', data:{ labels:fc.map(s=>fmtDateShort(s.date)), datasets:[{data:fc.map(s=>s.hr_avg),borderColor:'#F87171',backgroundColor:'rgba(248,113,113,0.07)',borderWidth:2,pointBackgroundColor:'#F87171',pointRadius:4,fill:true,tension:0.3}] },
+        options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y+' lpm'}}}, scales:{y:{ticks:{color:txt,callback:v=>v+' lpm'},grid:{color:grid}},x:{ticks:{color:txt,autoSkip:true,maxTicksLimit:8,font:{size:10}},grid:{color:grid}}} }
       });
     }
   }
 }
 
 // ─── MODAL ────────────────────────────────────────────────────────────────────
-window.openModal = function() {
-  const today = new Date().toISOString().slice(0,10);
-  document.getElementById('c-date').value = today;
-  document.getElementById('p-date').value = today;
-  document.getElementById('w-date').value = today;
+window.openModal = () => {
+  const today=new Date().toISOString().slice(0,10);
+  ['c-date','p-date','w-date'].forEach(id=>document.getElementById(id).value=today);
   document.getElementById('modal').classList.add('open');
 };
-window.closeModal = function() {
-  document.getElementById('modal').classList.remove('open');
-};
-window.switchTab = function(tab) {
-  currentTab = tab;
-  ['cardio','pesas','peso'].forEach((t,i) => {
-    document.getElementById('tab-'+t).style.display = t===tab?'':'none';
-    document.querySelectorAll('.tab-btn')[i].classList.toggle('active', t===tab);
+window.closeModal = () => document.getElementById('modal').classList.remove('open');
+window.switchTab  = tab => {
+  currentTab=tab;
+  ['cardio','pesas','peso'].forEach((t,i)=>{
+    document.getElementById('tab-'+t).style.display=t===tab?'':'none';
+    document.querySelectorAll('.tab-btn')[i].classList.toggle('active',t===tab);
   });
 };
-window.addExercise = function() {
-  const row = document.createElement('div');
-  row.className = 'exercise-row';
-  row.innerHTML = `<input type="text" placeholder="Ejercicio"><input type="number" placeholder="Series" min="1"><input type="number" placeholder="Reps" min="1"><input type="text" placeholder="Peso"><button class="remove-ex" onclick="removeExercise(this)">×</button>`;
-  document.getElementById('exercises-list').appendChild(row);
+window.addExercise = () => {
+  const r=document.createElement('div'); r.className='exercise-row';
+  r.innerHTML=`<input type="text" placeholder="Ejercicio"><input type="number" placeholder="Series" min="1"><input type="number" placeholder="Reps" min="1"><input type="text" placeholder="Peso"><button class="remove-ex" onclick="removeExercise(this)">×</button>`;
+  document.getElementById('exercises-list').appendChild(r);
 };
-window.removeExercise = function(btn) {
-  if (document.getElementById('exercises-list').children.length > 1) btn.parentElement.remove();
-};
+window.removeExercise = btn => { if(document.getElementById('exercises-list').children.length>1) btn.parentElement.remove(); };
 
 // ─── TOAST ────────────────────────────────────────────────────────────────────
-function showToast(msg, isError=false) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'toast show' + (isError?' error':'');
-  setTimeout(() => t.classList.remove('show'), 3000);
+function showToast(msg,isError=false) {
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.className='toast show'+(isError?' error':'');
+  setTimeout(()=>t.classList.remove('show'),3000);
 }
-window.showToast = showToast;
+window.showToast=showToast;
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
-function fmtDate(d) {
-  if (!d) return '';
-  const [y,m,dd] = d.split('-');
-  return `${parseInt(dd)} ${['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][m-1]} ${y}`;
-}
-function fmtDateShort(d) {
-  if (!d) return '';
-  const [,m,dd] = d.split('-');
-  return `${parseInt(dd)} ${['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][m-1]}`;
-}
-function typeLabel(t) { return {caminadora:'Caminadora',carrera:'Carrera',bici:'Bicicleta',pesas:'💪 Pesas',caminata:'Caminata',otro:'Otro'}[t]||t; }
-function typeColor(t)  { return {caminadora:'#5BA3E8',carrera:'#A78BFA',bici:'#4CD9A0',pesas:'#FB923C',caminata:'#4CD9A0',otro:'#888'}[t]||'#888'; }
-function sessionDetail(s) {
-  const p = [];
-  if (s.duration) p.push(s.duration+' min');
-  if (s.distance) p.push(s.distance.toFixed(2)+' km');
-  if (s.hr_avg)   p.push(s.hr_avg+' lpm');
-  return p.join(' · ')||'—';
-}
-function calcWeekNum(sessions) {
-  if (!sessions.length) return 1;
-  const diff = new Date(sessions[sessions.length-1].date) - new Date(sessions[0].date);
-  return Math.max(1, Math.ceil(diff/(7*86400000))+1);
-}
+const MONTHS=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+function fmtDate(d) { if(!d)return''; const[y,m,dd]=d.split('-'); return`${parseInt(dd)} ${MONTHS[m-1]} ${y}`; }
+function fmtDateShort(d) { if(!d)return''; const[,m,dd]=d.split('-'); return`${parseInt(dd)} ${MONTHS[m-1]}`; }
+function typeLabel(t){return{caminadora:'Caminadora',carrera:'Carrera',bici:'Bicicleta',pesas:'💪 Pesas',caminata:'Caminata',otro:'Otro'}[t]||t;}
+function typeColor(t){return{caminadora:'#5BA3E8',carrera:'#A78BFA',bici:'#4CD9A0',pesas:'#FB923C',caminata:'#4CD9A0',otro:'#888'}[t]||'#888';}
+function sessionDetail(s){const p=[];if(s.duration)p.push(s.duration+' min');if(s.distance)p.push(s.distance.toFixed(2)+' km');if(s.hr_avg)p.push(s.hr_avg+' lpm');return p.join(' · ')||'—';}
+function calcWeekNum(s){if(!s.length)return 1;return Math.max(1,Math.ceil((new Date(s.at(-1).date)-new Date(s[0].date))/(7*86400000))+1);}
+
+// Cerrar modales al click fuera
+['modal','confirm-modal','admin-panel'].forEach(id=>{
+  document.getElementById(id).addEventListener('click',e=>{ if(e.target===e.currentTarget) e.currentTarget.classList.remove('open'); });
+});
 </script>
+
 <style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:#0F0F0F; color:#E8E6E0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; padding:20px; max-width:800px; margin:0 auto; }
-  h1 { font-size:24px; font-weight:700; margin-bottom:4px; }
-  .subtitle { font-size:13px; color:#888; margin-bottom:24px; }
-  .badge { display:inline-block; background:#185FA5; color:white; font-size:11px; padding:3px 10px; border-radius:20px; margin-left:8px; vertical-align:middle; }
-  .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px; margin-bottom:24px; }
-  .metric { background:#1A1A1A; border:0.5px solid #2A2A2A; border-radius:12px; padding:14px; }
-  .metric-label { font-size:11px; color:#888; margin-bottom:4px; text-transform:uppercase; letter-spacing:.05em; }
-  .metric-value { font-size:22px; font-weight:600; }
-  .metric-value.green { color:#4CD9A0; }
-  .metric-value.blue  { color:#5BA3E8; }
-  .metric-value.purple{ color:#A78BFA; }
-  .metric-value.orange{ color:#FB923C; }
-  .metric-sub { font-size:11px; color:#666; margin-top:2px; }
-  .section { background:#1A1A1A; border:0.5px solid #2A2A2A; border-radius:12px; padding:16px; margin-bottom:16px; }
-  .section-title { font-size:13px; font-weight:600; color:#888; text-transform:uppercase; letter-spacing:.05em; margin-bottom:14px; }
-  canvas { width:100% !important; }
-  .gym-log { display:flex; flex-direction:column; gap:8px; }
-  .gym-day { display:grid; grid-template-columns:100px 1fr auto; gap:10px; align-items:center; padding:10px 12px; background:#111; border-radius:8px; font-size:13px; }
-  .gym-date { color:#888; font-size:12px; }
-  .gym-kcal { font-weight:600; }
-  .tag { display:inline-block; font-size:10px; padding:2px 8px; border-radius:20px; margin-top:3px; }
-  .tag-caminadora,.tag-bici,.tag-caminata { background:#1A3A5C; color:#5BA3E8; }
-  .tag-carrera  { background:#2D1F6E; color:#A78BFA; }
-  .tag-pesas    { background:#3A1F00; color:#FB923C; }
-  .tag-otro     { background:#2A2A2A; color:#888; }
-  .tag-bici     { background:#0F3324; color:#4CD9A0; }
-  .tag-caminata { background:#0F3324; color:#4CD9A0; }
-  .progress-bar-container { margin-top:12px; }
-  .progress-label { display:flex; justify-content:space-between; font-size:12px; color:#888; margin-bottom:6px; }
-  .progress-bar { height:8px; background:#2A2A2A; border-radius:4px; overflow:hidden; }
-  .progress-fill { height:100%; border-radius:4px; background:linear-gradient(90deg,#185FA5,#4CD9A0); }
-  .pesas-table { width:100%; font-size:12px; border-collapse:collapse; }
-  .pesas-table th { color:#666; text-align:left; padding:6px 8px; border-bottom:0.5px solid #2A2A2A; font-weight:500; }
-  .pesas-table td { padding:8px; border-bottom:0.5px solid #1E1E1E; color:#E8E6E0; }
-  .pesas-table tr:last-child td { border-bottom:none; }
-  footer { text-align:center; font-size:11px; color:#444; margin-top:24px; padding-bottom:60px; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0F0F0F; color:#E8E6E0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; padding:20px; max-width:800px; margin:0 auto; }
+h1 { font-size:24px; font-weight:700; margin-bottom:4px; }
+.subtitle { font-size:13px; color:#888; margin-bottom:24px; }
+.badge { display:inline-block; background:#185FA5; color:white; font-size:11px; padding:3px 10px; border-radius:20px; margin-left:8px; vertical-align:middle; }
+.metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px; margin-bottom:24px; }
+.metric { background:#1A1A1A; border:0.5px solid #2A2A2A; border-radius:12px; padding:14px; }
+.metric-label { font-size:11px; color:#888; margin-bottom:4px; text-transform:uppercase; letter-spacing:.05em; }
+.metric-value { font-size:22px; font-weight:600; }
+.metric-value.green{color:#4CD9A0;} .metric-value.blue{color:#5BA3E8;} .metric-value.purple{color:#A78BFA;} .metric-value.orange{color:#FB923C;}
+.metric-sub { font-size:11px; color:#666; margin-top:2px; }
+.section { background:#1A1A1A; border:0.5px solid #2A2A2A; border-radius:12px; padding:16px; margin-bottom:16px; }
+.section-title { font-size:13px; font-weight:600; color:#888; text-transform:uppercase; letter-spacing:.05em; margin-bottom:14px; }
+canvas { width:100% !important; }
+.gym-log { display:flex; flex-direction:column; gap:8px; }
+.gym-day { display:grid; grid-template-columns:100px 1fr auto; gap:10px; align-items:center; padding:10px 12px; background:#111; border-radius:8px; font-size:13px; }
+.gym-date { color:#888; font-size:12px; }
+.gym-kcal { font-weight:600; }
+.tag { display:inline-block; font-size:10px; padding:2px 8px; border-radius:20px; margin-top:3px; }
+.tag-caminadora{background:#1A3A5C;color:#5BA3E8;} .tag-carrera{background:#2D1F6E;color:#A78BFA;} .tag-bici{background:#0F3324;color:#4CD9A0;} .tag-pesas{background:#3A1F00;color:#FB923C;} .tag-caminata{background:#0F3324;color:#4CD9A0;} .tag-otro{background:#2A2A2A;color:#888;}
+.progress-bar-container{margin-top:12px;} .progress-label{display:flex;justify-content:space-between;font-size:12px;color:#888;margin-bottom:6px;} .progress-bar{height:8px;background:#2A2A2A;border-radius:4px;overflow:hidden;} .progress-fill{height:100%;border-radius:4px;background:linear-gradient(90deg,#185FA5,#4CD9A0);}
+.pesas-table{width:100%;font-size:12px;border-collapse:collapse;} .pesas-table th{color:#666;text-align:left;padding:6px 8px;border-bottom:0.5px solid #2A2A2A;font-weight:500;} .pesas-table td{padding:8px;border-bottom:0.5px solid #1E1E1E;color:#E8E6E0;} .pesas-table tr:last-child td{border-bottom:none;}
+footer{text-align:center;font-size:11px;color:#444;margin-top:24px;padding-bottom:60px;}
 
-  /* Header bar */
-  #header-bar { display:none; justify-content:flex-end; align-items:center; gap:12px; margin-bottom:16px; }
-  .user-info { display:flex; align-items:center; gap:8px; }
-  .user-avatar { width:28px; height:28px; border-radius:50%; object-fit:cover; }
-  .user-name { font-size:12px; color:#888; }
-  .btn-logout { background:none; border:0.5px solid #2A2A2A; border-radius:6px; color:#666; font-size:11px; padding:5px 10px; cursor:pointer; }
-  .btn-logout:hover { border-color:#444; color:#888; }
+/* Header */
+#header-bar{display:none;justify-content:flex-end;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap;}
+.user-info{display:flex;align-items:center;gap:8px;margin-right:auto;}
+.user-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;}
+.user-name{font-size:12px;color:#888;}
+.btn-header{display:inline-flex;align-items:center;gap:5px;background:none;border:0.5px solid #2A2A2A;border-radius:6px;color:#888;font-size:11px;padding:6px 10px;cursor:pointer;white-space:nowrap;}
+.btn-header:hover{border-color:#444;color:#E8E6E0;}
+.btn-header.danger{border-color:#3A1010;color:#F87171;}
+.btn-header.danger:hover{background:#1A0808;}
+.btn-header.admin{border-color:#1A3A5C;color:#5BA3E8;}
+.btn-header.admin:hover{background:#0F2030;}
 
-  /* Login */
-  .login-screen { display:flex; align-items:center; justify-content:center; min-height:80vh; }
-  .login-card { text-align:center; }
-  .btn-google { display:inline-flex; align-items:center; background:#1A1A1A; border:0.5px solid #2A2A2A; border-radius:10px; color:#E8E6E0; font-size:14px; font-weight:500; padding:14px 24px; cursor:pointer; transition:border-color .2s; }
-  .btn-google:hover { border-color:#444; }
+/* Login / Blocked */
+.login-screen{display:flex;align-items:center;justify-content:center;min-height:80vh;}
+.login-card{text-align:center;}
+.btn-google{display:inline-flex;align-items:center;background:#1A1A1A;border:0.5px solid #2A2A2A;border-radius:10px;color:#E8E6E0;font-size:14px;font-weight:500;padding:14px 24px;cursor:pointer;transition:border-color .2s;}
+.btn-google:hover{border-color:#444;}
 
-  /* FAB */
-  .fab { position:fixed; bottom:24px; right:24px; width:52px; height:52px; background:#185FA5; border:none; border-radius:50%; font-size:24px; color:white; cursor:pointer; box-shadow:0 4px 20px rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; z-index:100; transition:background .2s; }
-  .fab:hover { background:#1a6bbf; }
+/* Onboarding */
+.onboarding-card{background:#1A1A1A;border:0.5px solid #2A2A2A;border-radius:16px;padding:28px;max-width:480px;margin:60px auto 0;}
 
-  /* Modal */
-  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.75); z-index:200; align-items:center; justify-content:center; padding:20px; }
-  .modal-overlay.open { display:flex; }
-  .modal { background:#1A1A1A; border:0.5px solid #2A2A2A; border-radius:16px; padding:24px; width:100%; max-width:480px; max-height:90vh; overflow-y:auto; }
-  .modal h2 { font-size:16px; font-weight:600; margin-bottom:20px; }
-  .form-tabs { display:flex; gap:8px; margin-bottom:20px; }
-  .tab-btn { flex:1; padding:8px; background:#111; border:0.5px solid #2A2A2A; border-radius:8px; color:#888; font-size:12px; cursor:pointer; transition:all .2s; }
-  .tab-btn.active { background:#185FA5; border-color:#185FA5; color:white; }
-  .form-group { margin-bottom:14px; }
-  .form-group label { display:block; font-size:11px; color:#888; text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px; }
-  .form-group input,.form-group select,.form-group textarea { width:100%; background:#111; border:0.5px solid #2A2A2A; border-radius:8px; color:#E8E6E0; font-size:13px; padding:10px 12px; outline:none; }
-  .form-group input:focus,.form-group select:focus { border-color:#185FA5; }
-  .form-group textarea { resize:vertical; min-height:60px; }
-  .form-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .form-actions { display:flex; gap:10px; margin-top:20px; }
-  .btn { flex:1; padding:12px; border:none; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; transition:background .2s; }
-  .btn-primary { background:#185FA5; color:white; }
-  .btn-primary:hover { background:#1a6bbf; }
-  .btn-primary:disabled { background:#2A2A2A; color:#666; cursor:not-allowed; }
-  .btn-secondary { background:#2A2A2A; color:#888; }
-  .btn-secondary:hover { background:#333; }
-  .exercises-list { display:flex; flex-direction:column; gap:8px; margin-bottom:10px; }
-  .exercise-row { display:grid; grid-template-columns:2fr 1fr 1fr 1fr auto; gap:6px; align-items:center; }
-  .exercise-row input { padding:8px; font-size:12px; }
-  .remove-ex { background:none; border:none; color:#F87171; cursor:pointer; font-size:16px; padding:0 4px; }
-  .add-ex-btn { background:none; border:0.5px dashed #2A2A2A; border-radius:8px; color:#5BA3E8; font-size:12px; padding:8px; cursor:pointer; width:100%; margin-bottom:14px; }
-  .add-ex-btn:hover { border-color:#5BA3E8; }
-  .toast { position:fixed; bottom:90px; right:24px; background:#4CD9A0; color:#0F0F0F; font-size:13px; font-weight:600; padding:10px 18px; border-radius:8px; z-index:300; opacity:0; transition:opacity .3s; pointer-events:none; }
-  .toast.show { opacity:1; }
-  .toast.error { background:#F87171; }
-  .loading { text-align:center; color:#666; font-size:13px; padding:40px; }
+/* Empty state */
+.empty-state{text-align:center;padding:32px 16px;}
+.empty-state p{color:#666;font-size:13px;margin-bottom:16px;}
+.btn-import{display:inline-flex;align-items:center;gap:8px;background:#1A3A5C;border:none;border-radius:8px;color:#5BA3E8;font-size:13px;font-weight:500;padding:10px 20px;cursor:pointer;}
+.btn-import:hover{background:#1d4570;}
 
-  /* Onboarding */
-  .onboarding-card { background:#1A1A1A; border:0.5px solid #2A2A2A; border-radius:16px; padding:28px; max-width:480px; margin:60px auto 0; }
-  .empty-state { text-align:center; padding:32px 16px; }
-  .empty-state p { color:#666; font-size:13px; margin-bottom:16px; }
-  .btn-import { display:inline-flex; align-items:center; gap:8px; background:#1A3A5C; border:none; border-radius:8px; color:#5BA3E8; font-size:13px; font-weight:500; padding:10px 20px; cursor:pointer; }
-  .btn-import:hover { background:#1d4570; }
+/* FAB */
+.fab{position:fixed;bottom:24px;right:24px;width:52px;height:52px;background:#185FA5;border:none;border-radius:50%;font-size:24px;color:white;cursor:pointer;box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:100;transition:background .2s;}
+.fab:hover{background:#1a6bbf;}
+
+/* Modals */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:200;align-items:center;justify-content:center;padding:20px;}
+.modal-overlay.open{display:flex;}
+.modal{background:#1A1A1A;border:0.5px solid #2A2A2A;border-radius:16px;padding:24px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;}
+.modal-wide{max-width:640px;}
+.modal h2{font-size:16px;font-weight:600;margin-bottom:20px;}
+.form-tabs{display:flex;gap:8px;margin-bottom:20px;}
+.tab-btn{flex:1;padding:8px;background:#111;border:0.5px solid #2A2A2A;border-radius:8px;color:#888;font-size:12px;cursor:pointer;transition:all .2s;}
+.tab-btn.active{background:#185FA5;border-color:#185FA5;color:white;}
+.form-group{margin-bottom:14px;}
+.form-group label{display:block;font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;}
+.form-group input,.form-group select,.form-group textarea{width:100%;background:#111;border:0.5px solid #2A2A2A;border-radius:8px;color:#E8E6E0;font-size:13px;padding:10px 12px;outline:none;}
+.form-group input:focus,.form-group select:focus{border-color:#185FA5;}
+.form-group textarea{resize:vertical;min-height:60px;}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.form-actions{display:flex;gap:10px;margin-top:20px;}
+.btn{flex:1;padding:12px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:background .2s;}
+.btn-primary{background:#185FA5;color:white;} .btn-primary:hover{background:#1a6bbf;} .btn-primary:disabled{background:#2A2A2A;color:#666;cursor:not-allowed;}
+.btn-secondary{background:#2A2A2A;color:#888;} .btn-secondary:hover{background:#333;}
+.btn-danger{background:#3A1010;color:#F87171;} .btn-danger:hover{background:#4A1818;}
+.exercises-list{display:flex;flex-direction:column;gap:8px;margin-bottom:10px;}
+.exercise-row{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:6px;align-items:center;}
+.exercise-row input{padding:8px;font-size:12px;}
+.remove-ex{background:none;border:none;color:#F87171;cursor:pointer;font-size:16px;padding:0 4px;}
+.add-ex-btn{background:none;border:0.5px dashed #2A2A2A;border-radius:8px;color:#5BA3E8;font-size:12px;padding:8px;cursor:pointer;width:100%;margin-bottom:14px;}
+.add-ex-btn:hover{border-color:#5BA3E8;}
+
+/* Admin panel */
+.admin-user-row{display:flex;align-items:center;gap:12px;padding:12px;background:#111;border-radius:8px;margin-bottom:8px;}
+.admin-user-row.disabled-user{opacity:.5;}
+.admin-user-info{flex:1;min-width:0;}
+.admin-user-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.admin-user-email{font-size:11px;color:#666;margin-top:2px;}
+.admin-user-meta{font-size:11px;color:#555;margin-top:2px;}
+.btn-toggle-user{flex-shrink:0;padding:6px 12px;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;}
+.btn-disable{background:#3A1010;color:#F87171;} .btn-disable:hover{background:#4A1818;}
+.btn-enable{background:#0F3324;color:#4CD9A0;} .btn-enable:hover{background:#1A4A34;}
+.btn-logout{background:none;border:0.5px solid #2A2A2A;border-radius:6px;color:#666;font-size:11px;padding:5px 10px;cursor:pointer;}
+.btn-logout:hover{border-color:#444;color:#888;}
+
+.toast{position:fixed;bottom:90px;right:24px;background:#4CD9A0;color:#0F0F0F;font-size:13px;font-weight:600;padding:10px 18px;border-radius:8px;z-index:300;opacity:0;transition:opacity .3s;pointer-events:none;}
+.toast.show{opacity:1;} .toast.error{background:#F87171;}
+.loading{text-align:center;color:#666;font-size:13px;padding:40px;}
 </style>
 </head>
 <body>
 
-<!-- Header con avatar y logout -->
+<!-- Header -->
 <div id="header-bar">
   <div class="user-info">
     <img class="user-avatar" id="user-avatar" src="" alt="">
     <span class="user-name" id="user-name"></span>
   </div>
-  <button class="btn-logout" onclick="logout()">Cerrar sesión</button>
+  <button class="btn-header" onclick="exportData()" title="Exportar historial">⬇ Exportar</button>
+  <button class="btn-header danger" onclick="confirmReset()" title="Reiniciar historial">↺ Reiniciar</button>
+  <button class="btn-header admin" id="header-admin-btn" style="display:none" onclick="openAdminPanel()">👥 Usuarios</button>
+  <button class="btn-logout" onclick="logout()">Salir</button>
 </div>
 
-<div id="app">
-  <div class="loading">Iniciando...</div>
-</div>
+<div id="app"><div class="loading">Iniciando...</div></div>
 
 <!-- Modal nueva sesión -->
 <div class="modal-overlay" id="modal">
@@ -647,7 +627,6 @@ function calcWeekNum(sessions) {
       <button class="tab-btn" onclick="switchTab('pesas')">Pesas</button>
       <button class="tab-btn" onclick="switchTab('peso')">Peso</button>
     </div>
-
     <div id="tab-cardio">
       <div class="form-group"><label>Fecha</label><input type="date" id="c-date"></div>
       <div class="form-group"><label>Tipo</label>
@@ -669,7 +648,6 @@ function calcWeekNum(sessions) {
       </div>
       <div class="form-group"><label>Notas</label><textarea id="c-notes" placeholder="Opcional..."></textarea></div>
     </div>
-
     <div id="tab-pesas" style="display:none">
       <div class="form-row">
         <div class="form-group"><label>Fecha</label><input type="date" id="p-date"></div>
@@ -692,12 +670,10 @@ function calcWeekNum(sessions) {
       <button class="add-ex-btn" onclick="addExercise()">+ Agregar ejercicio</button>
       <div class="form-group"><label>Notas</label><textarea id="p-notes" placeholder="Opcional..."></textarea></div>
     </div>
-
     <div id="tab-peso" style="display:none">
       <div class="form-group"><label>Fecha</label><input type="date" id="w-date"></div>
       <div class="form-group"><label>Peso (kg)</label><input type="number" id="w-weight" step="0.01" placeholder="69.80"></div>
     </div>
-
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" id="save-btn" onclick="saveEntry()">Guardar</button>
@@ -705,29 +681,43 @@ function calcWeekNum(sessions) {
   </div>
 </div>
 
+<!-- Modal confirmar reinicio -->
+<div class="modal-overlay" id="confirm-modal">
+  <div class="modal" style="max-width:360px;text-align:center;">
+    <p style="font-size:32px;margin-bottom:12px;">⚠️</p>
+    <h2 style="margin-bottom:8px;">¿Reiniciar historial?</h2>
+    <p style="font-size:13px;color:#888;margin-bottom:24px;">Se eliminarán todas tus sesiones, registros de peso y pesas. Esta acción no se puede deshacer.<br><br>Considera exportar primero.</p>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeConfirm()">Cancelar</button>
+      <button class="btn btn-danger" onclick="resetHistory()">Sí, reiniciar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Panel admin -->
+<div class="modal-overlay" id="admin-panel">
+  <div class="modal modal-wide">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h2 style="margin:0;">👥 Gestión de usuarios</h2>
+      <button class="btn-secondary btn" style="flex:none;padding:8px 14px;font-size:12px;" onclick="closeAdminPanel()">Cerrar</button>
+    </div>
+    <div id="admin-body"><p style="color:#666;text-align:center;padding:20px;font-size:13px;">Cargando...</p></div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
-<script>
-// Actualizar avatar/nombre cuando cambia el auth state
-// (se ejecuta después del módulo ES)
-document.addEventListener('userLoaded', e => {
-  const u = e.detail;
-  if (u) {
-    document.getElementById('user-avatar').src  = u.photoURL || '';
-    document.getElementById('user-name').textContent = u.displayName || u.email;
+<script type="module">
+import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import { getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+onAuthStateChanged(getAuth(getApp()), user => {
+  if (user) {
+    const av = document.getElementById('user-avatar');
+    const nm = document.getElementById('user-name');
+    if (av) av.src = user.photoURL || '';
+    if (nm) nm.textContent = user.displayName || user.email;
   }
 });
 </script>
-
-<script type="module">
-// Emitir evento con el usuario para el script anterior
-import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-import { getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-const auth = getAuth(getApp());
-onAuthStateChanged(auth, user => {
-  document.dispatchEvent(new CustomEvent('userLoaded', { detail: user }));
-});
-</script>
-
 </body>
 </html>
